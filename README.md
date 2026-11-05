@@ -238,13 +238,30 @@ All data is stored locally in `reqly.db` inside the OS application data director
 
 ### Prerequisites
 
-1. **Node.js** `v18+` (or `v20+` / `v24+`) and `npm`
-2. **Rust Toolchain** (`stable`):
-   - Install via [rustup.rs](https://rustup.rs/)
+1. **Node.js** `v18+` (`v20+` or `v24+` recommended) and `npm`
+2. **Rust Toolchain (`rustc` & `cargo`)**:
+   - **macOS (MacBook) & Linux**:
+     ```bash
+     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+     source "$HOME/.cargo/env"
+     ```
+   - **Windows (PowerShell)**:
+     ```powershell
+     Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile "$env:TEMP\rustup-init.exe"
+     & "$env:TEMP\rustup-init.exe" -y
+     $env:Path += ";$env:USERPROFILE\.cargo\bin"
+     ```
 3. **Platform Build Dependencies**:
+   - **macOS**: Xcode Command Line Tools
+     ```bash
+     xcode-select --install
+     ```
    - **Windows**: Microsoft Visual Studio C++ Build Tools & WebView2 (pre-installed on Windows 10/11)
-   - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
-   - **Linux**: `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`
+   - **Linux (Ubuntu/Debian)**:
+     ```bash
+     sudo apt-get update
+     sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+     ```
 
 ### Installation & Development
 
@@ -275,10 +292,48 @@ cargo test
 npm run tauri build
 ```
 
-On Windows, the compiled binary and installers are generated at:
-- **NSIS Installer (`.exe`)**: `src-tauri/target/release/bundle/nsis/Reqly_1.0.0_x64-setup.exe`
-- **MSI Installer (`.msi`)**: `src-tauri/target/release/bundle/msi/Reqly_1.0.0_x64_en-US.msi`
-- **Portable Executable (`.exe`)**: `src-tauri/target/release/reqly.exe`
+#### Output Locations by OS
+
+- **Windows**:
+  - **NSIS Installer (`.exe`)**: `src-tauri/target/release/bundle/nsis/Reqly_1.0.0_x64-setup.exe`
+  - **MSI Installer (`.msi`)**: `src-tauri/target/release/bundle/msi/Reqly_1.0.0_x64_en-US.msi`
+  - **Portable Executable (`.exe`)**: `src-tauri/target/release/reqly.exe`
+- **macOS (MacBook Apple Silicon & Intel)**:
+  - **DMG Disk Image (`.dmg`)**: `src-tauri/target/release/bundle/dmg/Reqly_1.0.0_aarch64.dmg` (or `x64.dmg`)
+  - **macOS Application Bundle (`.app`)**: `src-tauri/target/release/bundle/macos/Reqly.app`
+- **Linux**:
+  - **AppImage**: `src-tauri/target/release/bundle/appimage/Reqly_1.0.0_amd64.AppImage`
+  - **Debian Package (`.deb`)**: `src-tauri/target/release/bundle/deb/Reqly_1.0.0_amd64.deb`
+
+---
+
+## Troubleshooting
+
+### `failed to run 'cargo metadata' command ...: program not found`
+
+This error occurs when the Rust compiler (`cargo`) is either not installed yet or not loaded into your current terminal session's `PATH`.
+
+- **Fix on macOS (MacBook) / Linux**:
+  ```bash
+  # Install Rust if not installed yet
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+  # Load Cargo into current terminal session
+  source "$HOME/.cargo/env"
+  cargo --version
+
+  # Run Reqly
+  npm run tauri dev
+  ```
+- **Fix on Windows (PowerShell)**:
+  ```powershell
+  # Add Cargo bin directory to current PowerShell session PATH
+  $env:Path += ";$env:USERPROFILE\.cargo\bin"
+  cargo --version
+
+  # Always use `npm run tauri` (uses scripts/tauri.cjs wrapper)
+  npm run tauri dev
+  ```
 
 ---
 
