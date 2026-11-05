@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend build output
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/WixTools/
+
+# Local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+

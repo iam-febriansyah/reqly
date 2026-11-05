@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Reqly logo</title>
+  <rect x="0" y="0" width="256" height="256" rx="56" ry="56" fill="#0071E3"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="
+    M 52 44
+    L 144 44
+    A 50 50 0 0 1 194 94
+    A 50 50 0 0 1 144 144
+    L 136 144
+    L 204 212
+    L 154 212
+    L 86 144
+    L 86 212
+    L 52 212
+    Z
+    M 86 76
+    L 86 112
+    L 142 112
+    A 18 18 0 0 0 160 94
+    A 18 18 0 0 0 142 76
+    Z
+  "/>
+  <path fill="#FFFFFF" d="
+    M 170 44
+    L 204 44
+    L 204 78
+    Z
+  "/>
+</svg>
+
