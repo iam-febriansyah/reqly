@@ -1,5 +1,11 @@
-import React, { useMemo, useRef } from "react";
-import { AlignLeft, CheckCircle2, AlertCircle, Minimize2 } from "lucide-react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
+import {
+  AlignLeft,
+  CheckCircle2,
+  AlertCircle,
+  Minimize2,
+  WrapText,
+} from "lucide-react";
 
 interface JsonCodeEditorProps {
   value: string;
@@ -8,6 +14,9 @@ interface JsonCodeEditorProps {
   language?: "json" | "raw" | "html";
   placeholder?: string;
   maxHeight?: string;
+  wrap?: boolean;
+  onWrapChange?: (wrapped: boolean) => void;
+  hideToolbar?: boolean;
 }
 
 export function highlightJsonTokens(code: string): React.ReactNode[] {
@@ -59,9 +68,28 @@ export const JsonCodeEditor: React.FC<JsonCodeEditorProps> = ({
   readOnly = false,
   language = "json",
   placeholder = '{\n  "key": "value"\n}',
+  wrap,
+  onWrapChange,
+  hideToolbar = false,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const preRef = useRef<HTMLPreElement | null>(null);
+
+  const [internalWrap, setInternalWrap] = useState(wrap ?? false);
+
+  useEffect(() => {
+    if (wrap !== undefined) {
+      setInternalWrap(wrap);
+    }
+  }, [wrap]);
+
+  const isWrapped = wrap !== undefined ? wrap : internalWrap;
+
+  const handleToggleWrap = () => {
+    const next = !isWrapped;
+    setInternalWrap(next);
+    onWrapChange?.(next);
+  };
 
   const linesCount = useMemo(() => {
     if (!value) return 1;
@@ -121,47 +149,84 @@ export const JsonCodeEditor: React.FC<JsonCodeEditorProps> = ({
       requestAnimationFrame(() => {
         el.selectionStart = el.selectionEnd = start + 2;
       });
-    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+    } else if (
+      (e.metaKey || e.ctrlKey) &&
+      e.shiftKey &&
+      e.key.toLowerCase() === "f"
+    ) {
       e.preventDefault();
       handleFormat();
     }
   };
 
   return (
-    <div className="code-editor-container">
-      {language === "json" && !readOnly && (
+    <div
+      className={`code-editor-container ${
+        isWrapped ? "is-wrapped" : "no-wrap"
+      }`}
+    >
+      {!hideToolbar && (
         <div className="code-editor-toolbar">
           <div className="code-status">
-            {jsonValidation.valid ? (
-              <span className="json-valid-pill">
-                <CheckCircle2 size={12} />
-                <span>Valid JSON</span>
-              </span>
-            ) : (
-              <span className="json-invalid-pill" title={jsonValidation.error || ""}>
-                <AlertCircle size={12} />
-                <span>Syntax Warning</span>
-              </span>
+            {language === "json" && !readOnly && (
+              jsonValidation.valid ? (
+                <span className="json-valid-pill">
+                  <CheckCircle2 size={12} />
+                  <span>Valid JSON</span>
+                </span>
+              ) : (
+                <span
+                  className="json-invalid-pill"
+                  title={jsonValidation.error || ""}
+                >
+                  <AlertCircle size={12} />
+                  <span>Syntax Warning</span>
+                </span>
+              )
             )}
+            <span className="code-meta-pill" title={`${linesCount} lines`}>
+              {linesCount} {linesCount === 1 ? "line" : "lines"}
+            </span>
           </div>
+
           <div className="code-actions">
+            {language === "json" && !readOnly && (
+              <>
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={handleFormat}
+                  title="Beautify JSON (Ctrl+Shift+F)"
+                >
+                  <AlignLeft size={12} />
+                  <span>Prettify</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost btn-xs"
+                  onClick={handleMinify}
+                  title="Minify JSON"
+                >
+                  <Minimize2 size={12} />
+                  <span>Minify</span>
+                </button>
+              </>
+            )}
+
             <button
               type="button"
-              className="btn-ghost btn-xs"
-              onClick={handleFormat}
-              title="Beautify JSON (Ctrl+Shift+F)"
+              className={`btn-ghost btn-xs code-wrap-btn ${
+                isWrapped ? "active" : ""
+              }`}
+              onClick={handleToggleWrap}
+              title={
+                isWrapped
+                  ? "Disable line wrapping (scroll horizontally)"
+                  : "Enable line wrapping (soft wrap)"
+              }
             >
-              <AlignLeft size={12} />
-              <span>Prettify</span>
-            </button>
-            <button
-              type="button"
-              className="btn-ghost btn-xs"
-              onClick={handleMinify}
-              title="Minify JSON"
-            >
-              <Minimize2 size={12} />
-              <span>Minify</span>
+              <WrapText size={12} />
+              <span>{isWrapped ? "Wrap: On" : "Wrap: Off"}</span>
             </button>
           </div>
         </div>
@@ -207,4 +272,3 @@ export const JsonCodeEditor: React.FC<JsonCodeEditorProps> = ({
     </div>
   );
 };
-

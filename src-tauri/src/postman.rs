@@ -655,6 +655,7 @@ fn convert_postman_request(
         body,
         auth,
         timeout_ms: 30000,
+        ssl_verify: false,
         sort_order,
         created_at: now.clone(),
         updated_at: now,

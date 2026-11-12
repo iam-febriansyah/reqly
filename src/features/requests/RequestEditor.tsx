@@ -1,11 +1,14 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  BookmarkPlus,
   CheckCircle2,
   Clock,
   Lock,
   Play,
   Plus,
+  ShieldAlert,
+  ShieldCheck,
   Square,
   Trash2,
   X,
@@ -14,6 +17,7 @@ import { useAppStore } from "../../stores/useAppStore";
 import { MethodBadge } from "../../components/MethodBadge";
 import { KeyValueTable } from "../../components/KeyValueTable";
 import { JsonCodeEditor } from "../../components/JsonCodeEditor";
+import { SaveRequestAsModal } from "./SaveRequestAsModal";
 import {
   collectUnresolvedVariables,
   generateId,
@@ -52,6 +56,22 @@ export const RequestEditor: React.FC = () => {
     "params" | "headers" | "body" | "auth"
   >("params");
   const [customMethodMode, setCustomMethodMode] = useState(false);
+  const [saveAsModalOpen, setSaveAsModalOpen] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "s"
+      ) {
+        e.preventDefault();
+        setSaveAsModalOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const executionState = activeRequestId
     ? tabStates[activeRequestId]
@@ -204,7 +224,7 @@ export const RequestEditor: React.FC = () => {
         </button>
       </div>
 
-      {/* Request Meta Header (Editable Name + Timeout) */}
+      {/* Request Meta Header (Editable Name + Timeout + SSL Verification) */}
       <div className="request-title-bar">
         <input
           type="text"
@@ -216,24 +236,64 @@ export const RequestEditor: React.FC = () => {
           }
         />
 
-        <div className="request-timeout-box" title="Request Timeout (ms)">
-          <Clock size={12} className="muted-icon" />
-          <span className="timeout-label">Timeout:</span>
-          <input
-            type="number"
-            className="timeout-input"
-            min={500}
-            max={300000}
-            step={500}
-            value={activeRequest.timeoutMs || 30000}
-            onChange={(e) =>
+        <div className="request-meta-controls">
+          <button
+            type="button"
+            className="btn-ghost btn-xs request-save-as-btn"
+            onClick={() => setSaveAsModalOpen(true)}
+            title="Save as new request (Ctrl+Shift+S)"
+          >
+            <BookmarkPlus size={12} />
+            <span>Save As</span>
+          </button>
+
+          <button
+            type="button"
+            className={`request-ssl-btn ${!activeRequest.sslVerify ? "ssl-off" : "ssl-on"}`}
+            onClick={() =>
               updateActiveRequest((prev) => ({
                 ...prev,
-                timeoutMs: Math.max(500, Number(e.target.value) || 30000),
+                sslVerify: !prev.sslVerify,
               }))
             }
-          />
-          <span className="timeout-unit">ms</span>
+            title={
+              activeRequest.sslVerify
+                ? "SSL Verification: Strict (Click to disable for self-signed/internal APIs)"
+                : "SSL Verification: Off (Permissive Postman mode - allows self-signed & internal certs). Click to enable strict."
+            }
+          >
+            {activeRequest.sslVerify ? (
+              <>
+                <ShieldCheck size={12} />
+                <span>SSL: Strict</span>
+              </>
+            ) : (
+              <>
+                <ShieldAlert size={12} />
+                <span>SSL: Off</span>
+              </>
+            )}
+          </button>
+
+          <div className="request-timeout-box" title="Request Timeout (ms)">
+            <Clock size={12} className="muted-icon" />
+            <span className="timeout-label">Timeout:</span>
+            <input
+              type="number"
+              className="timeout-input"
+              min={500}
+              max={300000}
+              step={500}
+              value={activeRequest.timeoutMs || 30000}
+              onChange={(e) =>
+                updateActiveRequest((prev) => ({
+                  ...prev,
+                  timeoutMs: Math.max(500, Number(e.target.value) || 30000),
+                }))
+              }
+            />
+            <span className="timeout-unit">ms</span>
+          </div>
         </div>
       </div>
 
@@ -442,6 +502,7 @@ export const RequestEditor: React.FC = () => {
               keyPlaceholder="Parameter name (e.g. page, userId)"
               valuePlaceholder="Value or {{VARIABLE}}"
               variables={activeVariables}
+              type="params"
             />
           </div>
         )}
@@ -459,6 +520,7 @@ export const RequestEditor: React.FC = () => {
               keyPlaceholder="Header (e.g. Accept, X-Request-ID)"
               valuePlaceholder="Header value or {{VARIABLE}}"
               variables={activeVariables}
+              type="headers"
             />
           </div>
         )}
@@ -826,6 +888,11 @@ export const RequestEditor: React.FC = () => {
           </div>
         )}
       </div>
+
+      <SaveRequestAsModal
+        open={saveAsModalOpen}
+        onClose={() => setSaveAsModalOpen(false)}
+      />
     </section>
   );
 };

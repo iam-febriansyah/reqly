@@ -76,6 +76,7 @@ export interface SavedRequest {
   body: RequestBody;
   auth: AuthConfig;
   timeoutMs: number;
+  sslVerify?: boolean;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;

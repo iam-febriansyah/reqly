@@ -216,6 +216,7 @@ pub fn resolve_request(
         body: resolved_body,
         auth: resolved_auth,
         timeout_ms: request.timeout_ms,
+        ssl_verify: request.ssl_verify,
         sort_order: request.sort_order,
         created_at: request.created_at.clone(),
         updated_at: request.updated_at.clone(),

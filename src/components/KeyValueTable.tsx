@@ -1,7 +1,16 @@
-import React from "react";
+import React, { useRef } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import type { EnvironmentVariable, KeyValueItem } from "../types";
 import { generateId, resolveVariablesInString } from "../services/api";
+import { SuggestionInput } from "./SuggestionInput";
+import {
+  getHeaderKeySuggestions,
+  getHeaderValueSuggestions,
+  getParamKeySuggestions,
+  getParamValueSuggestions,
+  getVariableSuggestions,
+  extractVariableQuery,
+} from "../constants/suggestions";
 
 interface KeyValueTableProps {
   items: KeyValueItem[];
@@ -11,6 +20,7 @@ interface KeyValueTableProps {
   descriptionPlaceholder?: string;
   variables?: EnvironmentVariable[];
   showDescription?: boolean;
+  type?: "headers" | "params" | "general";
 }
 
 export const KeyValueTable: React.FC<KeyValueTableProps> = ({
@@ -21,7 +31,10 @@ export const KeyValueTable: React.FC<KeyValueTableProps> = ({
   descriptionPlaceholder = "Description",
   variables = [],
   showDescription = true,
+  type = "general",
 }) => {
+  const valueInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
   const handleUpdate = (
     id: string,
     field: keyof KeyValueItem,
@@ -64,10 +77,41 @@ export const KeyValueTable: React.FC<KeyValueTableProps> = ({
       );
     }
     return (
-      <span className="var-inline-chip var-resolved" title={`Resolves to: ${resolved}`}>
+      <span
+        className="var-inline-chip var-resolved"
+        title={`Resolves to: ${resolved}`}
+      >
         = {resolved}
       </span>
     );
+  };
+
+  const getKeySuggestions = (query: string) => {
+    if (type === "headers") {
+      return getHeaderKeySuggestions(query, variables);
+    }
+    if (type === "params") {
+      return getParamKeySuggestions(query, variables);
+    }
+    const varCheck = extractVariableQuery(query);
+    if (varCheck.isVariable) {
+      return getVariableSuggestions(varCheck.query, variables);
+    }
+    return [];
+  };
+
+  const getValueSuggestions = (headerKey: string, valueQuery: string) => {
+    if (type === "headers") {
+      return getHeaderValueSuggestions(headerKey, valueQuery, variables);
+    }
+    if (type === "params") {
+      return getParamValueSuggestions(headerKey, valueQuery, variables);
+    }
+    const varCheck = extractVariableQuery(valueQuery);
+    if (varCheck.isVariable) {
+      return getVariableSuggestions(varCheck.query, variables);
+    }
+    return [];
   };
 
   return (
@@ -110,28 +154,30 @@ export const KeyValueTable: React.FC<KeyValueTableProps> = ({
                 </td>
                 <td>
                   <div className="kv-input-group">
-                    <input
-                      type="text"
+                    <SuggestionInput
                       className="kv-input mono-input"
                       placeholder={keyPlaceholder}
                       value={item.key}
-                      onChange={(e) =>
-                        handleUpdate(item.id, "key", e.target.value)
-                      }
+                      onChange={(val) => handleUpdate(item.id, "key", val)}
+                      suggestions={getKeySuggestions(item.key)}
+                      onFocusNext={() => {
+                        valueInputRefs.current[item.id]?.focus();
+                      }}
                     />
                     {renderVarHint(item.key)}
                   </div>
                 </td>
                 <td>
                   <div className="kv-input-group">
-                    <input
-                      type="text"
+                    <SuggestionInput
                       className="kv-input mono-input"
                       placeholder={valuePlaceholder}
                       value={item.value}
-                      onChange={(e) =>
-                        handleUpdate(item.id, "value", e.target.value)
-                      }
+                      onChange={(val) => handleUpdate(item.id, "value", val)}
+                      suggestions={getValueSuggestions(item.key, item.value)}
+                      setInputRef={(el) => {
+                        valueInputRefs.current[item.id] = el;
+                      }}
                     />
                     {renderVarHint(item.value)}
                   </div>
@@ -165,7 +211,11 @@ export const KeyValueTable: React.FC<KeyValueTableProps> = ({
         </tbody>
       </table>
       <div className="kv-footer">
-        <button type="button" className="btn-secondary btn-xs" onClick={handleAddRow}>
+        <button
+          type="button"
+          className="btn-secondary btn-xs"
+          onClick={handleAddRow}
+        >
           <Plus size={13} />
           <span>Add Row</span>
         </button>
@@ -173,4 +223,3 @@ export const KeyValueTable: React.FC<KeyValueTableProps> = ({
     </div>
   );
 };
-

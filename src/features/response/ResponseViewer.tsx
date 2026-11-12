@@ -2,16 +2,21 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   AlignLeft,
   AlertCircle,
+  BookmarkPlus,
   Check,
   Copy,
+  Download,
   Eraser,
   Globe,
   Image as ImageIcon,
   Loader2,
   Square,
+  WrapText,
 } from "lucide-react";
 import { useAppStore } from "../../stores/useAppStore";
 import { JsonCodeEditor } from "../../components/JsonCodeEditor";
+import { generateId } from "../../services/api";
+import type { SavedRequest } from "../../types";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -22,19 +27,26 @@ function formatSize(bytes: number): string {
 export const ResponseViewer: React.FC = () => {
   const {
     activeRequestId,
+    activeRequest,
+    activeProject,
     tabStates,
     cancelActiveRequest,
     clearActiveResponse,
+    saveRequest,
+    openRequestTab,
     showToast,
   } = useAppStore();
 
   const [activeTab, setActiveTab] = useState<"body" | "headers">("body");
-  const [viewFormat, setViewFormat] = useState<"pretty" | "raw" | "html" | "image">(
-    "pretty"
-  );
+  const [viewFormat, setViewFormat] = useState<
+    "pretty" | "raw" | "html" | "image"
+  >("pretty");
   const [copiedBody, setCopiedBody] = useState(false);
   const [copiedHeaders, setCopiedHeaders] = useState(false);
-  const [formattedOverride, setFormattedOverride] = useState<string | null>(null);
+  const [formattedOverride, setFormattedOverride] = useState<string | null>(
+    null
+  );
+  const [wrapResponse, setWrapResponse] = useState(false);
 
   const state = activeRequestId ? tabStates[activeRequestId] : undefined;
   const response = state?.response || null;
@@ -109,6 +121,116 @@ export const ResponseViewer: React.FC = () => {
     }
   };
 
+  const handleSaveResponse = () => {
+    if (!response) return;
+    let ext = "txt";
+    let mimeType = response.contentType || "text/plain";
+    const lowerCt = (response.contentType || "").toLowerCase();
+
+    if (
+      lowerCt.includes("json") ||
+      (response.body.trim().startsWith("{") &&
+        response.body.trim().endsWith("}")) ||
+      (response.body.trim().startsWith("[") &&
+        response.body.trim().endsWith("]"))
+    ) {
+      ext = "json";
+      mimeType = "application/json";
+    } else if (lowerCt.includes("html")) {
+      ext = "html";
+      mimeType = "text/html";
+    } else if (lowerCt.includes("xml")) {
+      ext = "xml";
+      mimeType = "application/xml";
+    } else if (lowerCt.includes("csv")) {
+      ext = "csv";
+      mimeType = "text/csv";
+    }
+
+    const reqName = activeRequest?.name || "response";
+    const safeName = reqName
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .replace(/_+/g, "_");
+    const filename = `${safeName}_response.${ext}`;
+
+    if (response.isImage && response.imageBase64) {
+      const a = document.createElement("a");
+      a.href = response.imageBase64;
+      a.download = `${safeName}.${response.contentType.split("/")[1] || "png"}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(`Image response saved as ${a.download}`);
+      return;
+    }
+
+    const contentToSave = viewFormat === "pretty" ? prettyBody : response.body;
+    const blob = new Blob([contentToSave], {
+      type: `${mimeType};charset=utf-8`,
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`Response saved as ${filename}`);
+  };
+
+  const handleSaveResponseAsRequest = async () => {
+    if (!response || !activeProject) return;
+    const now = new Date().toISOString();
+    const reqName = activeRequest?.name
+      ? `Response: ${activeRequest.name}`
+      : "New Request from Response";
+
+    const newRequest: SavedRequest = {
+      id: generateId(),
+      projectId: activeProject.id,
+      folderId: activeRequest?.folderId || null,
+      name: reqName,
+      method: "POST",
+      url: activeRequest?.url || "https://api.example.com",
+      params: [],
+      headers: [
+        {
+          id: generateId(),
+          key: "Content-Type",
+          value: isJsonLike ? "application/json" : "text/plain",
+          description: "",
+          enabled: true,
+        },
+      ],
+      body: {
+        mode: isJsonLike ? "json" : "raw",
+        raw: viewFormat === "pretty" ? prettyBody : response.body,
+        urlencoded: [],
+        formdata: [],
+      },
+      auth: {
+        type: "none",
+        bearerToken: "",
+        basicUsername: "",
+        basicPassword: "",
+        apiKeyName: "X-Api-Key",
+        apiKeyValue: "",
+        apiKeyIn: "header",
+      },
+      timeoutMs: 30000,
+      sslVerify: false,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const saved = await saveRequest(newRequest);
+    openRequestTab(saved.id);
+    showToast(`Created new request "${saved.name}" from response`);
+  };
+
   const getStatusBadgeClass = (code: number) => {
     if (code >= 200 && code < 300) return "status-pill-2xx";
     if (code >= 300 && code < 400) return "status-pill-3xx";
@@ -153,6 +275,19 @@ export const ResponseViewer: React.FC = () => {
             </button>
             <button
               type="button"
+              className={`btn-ghost btn-xs ${wrapResponse ? "active" : ""}`}
+              onClick={() => setWrapResponse(!wrapResponse)}
+              title={
+                wrapResponse
+                  ? "Disable line wrapping (scroll horizontally)"
+                  : "Enable line wrapping (soft wrap)"
+              }
+            >
+              <WrapText size={12} />
+              <span>{wrapResponse ? "Wrap: On" : "Wrap: Off"}</span>
+            </button>
+            <button
+              type="button"
               className="btn-ghost btn-xs"
               onClick={handleCopyBody}
               title="Copy Response Body"
@@ -168,6 +303,24 @@ export const ResponseViewer: React.FC = () => {
             >
               {copiedHeaders ? <Check size={12} /> : <Copy size={12} />}
               <span>Copy Headers</span>
+            </button>
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={handleSaveResponse}
+              title="Save Response body to file (Download)"
+            >
+              <Download size={12} />
+              <span>Save Response</span>
+            </button>
+            <button
+              type="button"
+              className="btn-ghost btn-xs"
+              onClick={handleSaveResponseAsRequest}
+              title="Save this response body as a new Request"
+            >
+              <BookmarkPlus size={12} />
+              <span>Save as Request</span>
             </button>
             <button
               type="button"
@@ -246,8 +399,9 @@ export const ResponseViewer: React.FC = () => {
               </button>
               <button
                 type="button"
-                className={`config-tab ${activeTab === "headers" ? "active" : ""
-                  }`}
+                className={`config-tab ${
+                  activeTab === "headers" ? "active" : ""
+                }`}
                 onClick={() => setActiveTab("headers")}
               >
                 <span>Headers</span>
@@ -259,7 +413,9 @@ export const ResponseViewer: React.FC = () => {
               <div className="segmented-control">
                 <button
                   type="button"
-                  className={`seg-btn ${viewFormat === "pretty" ? "active" : ""}`}
+                  className={`seg-btn ${
+                    viewFormat === "pretty" ? "active" : ""
+                  }`}
                   onClick={() => setViewFormat("pretty")}
                 >
                   Pretty JSON
@@ -281,8 +437,9 @@ export const ResponseViewer: React.FC = () => {
                 {response.isImage && (
                   <button
                     type="button"
-                    className={`seg-btn ${viewFormat === "image" ? "active" : ""
-                      }`}
+                    className={`seg-btn ${
+                      viewFormat === "image" ? "active" : ""
+                    }`}
                     onClick={() => setViewFormat("image")}
                   >
                     <ImageIcon size={11} />
@@ -327,13 +484,27 @@ export const ResponseViewer: React.FC = () => {
             ) : viewFormat === "pretty" ? (
               <JsonCodeEditor
                 readOnly
+                wrap={wrapResponse}
+                onWrapChange={setWrapResponse}
                 language={isJsonLike ? "json" : "raw"}
                 value={prettyBody}
               />
             ) : viewFormat === "html" ? (
-              <JsonCodeEditor readOnly language="html" value={response.body} />
+              <JsonCodeEditor
+                readOnly
+                wrap={wrapResponse}
+                onWrapChange={setWrapResponse}
+                language="html"
+                value={response.body}
+              />
             ) : (
-              <JsonCodeEditor readOnly language="raw" value={response.body} />
+              <JsonCodeEditor
+                readOnly
+                wrap={wrapResponse}
+                onWrapChange={setWrapResponse}
+                language="raw"
+                value={response.body}
+              />
             )}
           </div>
         </>
@@ -341,4 +512,3 @@ export const ResponseViewer: React.FC = () => {
     </section>
   );
 };
-

@@ -81,6 +81,7 @@ impl Database {
                 body_json TEXT NOT NULL DEFAULT '{\"mode\":\"none\"}',
                 auth_json TEXT NOT NULL DEFAULT '{\"type\":\"none\"}',
                 timeout_ms INTEGER NOT NULL DEFAULT 30000,
+                ssl_verify INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -118,6 +119,12 @@ impl Database {
             ",
         )
         .map_err(|e| format!("Failed to initialize SQLite schema: {}", e))?;
+
+        let _ = conn.execute(
+            "ALTER TABLE requests ADD COLUMN ssl_verify INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+
         Ok(())
     }
 
@@ -264,6 +271,7 @@ impl Database {
                 ..Default::default()
             },
             timeout_ms: 30000,
+            ssl_verify: false,
             sort_order: 0,
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -296,6 +304,7 @@ impl Database {
                 ..Default::default()
             },
             timeout_ms: 30000,
+            ssl_verify: false,
             sort_order: 1,
             created_at: now.clone(),
             updated_at: now.clone(),
@@ -319,6 +328,7 @@ impl Database {
             body: RequestBody::default(),
             auth: AuthConfig::default(),
             timeout_ms: 30000,
+            ssl_verify: false,
             sort_order: 2,
             created_at: now.clone(),
             updated_at: now,
@@ -573,7 +583,8 @@ impl Database {
             .prepare(
                 "SELECT id, project_id, folder_id, name, method, url,
                         params_json, headers_json, body_json, auth_json,
-                        timeout_ms, sort_order, created_at, updated_at
+                        timeout_ms, sort_order, created_at, updated_at,
+                        ssl_verify
                  FROM requests
                  WHERE project_id = ?1
                  ORDER BY sort_order ASC, created_at ASC",
@@ -587,6 +598,7 @@ impl Database {
                 let body_str: String = row.get(8)?;
                 let auth_str: String = row.get(9)?;
                 let timeout_i64: i64 = row.get(10)?;
+                let ssl_verify_i64: i64 = row.get(14).unwrap_or(0);
 
                 Ok(SavedRequest {
                     id: row.get(0)?,
@@ -600,6 +612,7 @@ impl Database {
                     body: serde_json::from_str(&body_str).unwrap_or_default(),
                     auth: serde_json::from_str(&auth_str).unwrap_or_default(),
                     timeout_ms: timeout_i64.max(1000) as u64,
+                    ssl_verify: ssl_verify_i64 != 0,
                     sort_order: row.get(11)?,
                     created_at: row.get(12)?,
                     updated_at: row.get(13)?,
@@ -643,8 +656,9 @@ impl Database {
             "INSERT INTO requests (
                 id, project_id, folder_id, name, method, url,
                 params_json, headers_json, body_json, auth_json,
-                timeout_ms, sort_order, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                timeout_ms, sort_order, created_at, updated_at,
+                ssl_verify
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                 folder_id = excluded.folder_id,
                 name = excluded.name,
@@ -656,7 +670,8 @@ impl Database {
                 auth_json = excluded.auth_json,
                 timeout_ms = excluded.timeout_ms,
                 sort_order = excluded.sort_order,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at,
+                ssl_verify = excluded.ssl_verify",
             params![
                 req.id,
                 req.project_id,
@@ -671,7 +686,8 @@ impl Database {
                 req.timeout_ms as i64,
                 req.sort_order,
                 created_at,
-                now
+                now,
+                if req.ssl_verify { 1 } else { 0 }
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -688,7 +704,8 @@ impl Database {
             conn.query_row(
                 "SELECT id, project_id, folder_id, name, method, url,
                         params_json, headers_json, body_json, auth_json,
-                        timeout_ms, sort_order, created_at, updated_at
+                        timeout_ms, sort_order, created_at, updated_at,
+                        ssl_verify
                  FROM requests WHERE id = ?1",
                 params![request_id],
                 |row| {
@@ -697,6 +714,7 @@ impl Database {
                     let body_str: String = row.get(8)?;
                     let auth_str: String = row.get(9)?;
                     let timeout_i64: i64 = row.get(10)?;
+                    let ssl_verify_i64: i64 = row.get(14).unwrap_or(0);
                     Ok(SavedRequest {
                         id: row.get(0)?,
                         project_id: row.get(1)?,
@@ -709,6 +727,7 @@ impl Database {
                         body: serde_json::from_str(&body_str).unwrap_or_default(),
                         auth: serde_json::from_str(&auth_str).unwrap_or_default(),
                         timeout_ms: timeout_i64.max(1000) as u64,
+                        ssl_verify: ssl_verify_i64 != 0,
                         sort_order: row.get(11)?,
                         created_at: row.get(12)?,
                         updated_at: row.get(13)?,

@@ -21,16 +21,40 @@ export const EnvironmentManagerModal: React.FC = () => {
   const [draftEnv, setDraftEnv] = useState<Environment | null>(null);
   const [newEnvName, setNewEnvName] = useState("");
 
+  // Only initialize selected environment when opening the modal
   useEffect(() => {
     if (!envModalOpen) return;
-    const initialId =
-      activeProject?.activeEnvironmentId || environments[0]?.id || null;
-    setSelectedEnvId(initialId);
-  }, [envModalOpen, activeProject?.activeEnvironmentId, environments]);
+    setSelectedEnvId((current) => {
+      // If current is already pointing to an existing environment, keep it!
+      if (current && environments.some((e) => e.id === current)) {
+        return current;
+      }
+      return (
+        activeProject?.activeEnvironmentId ||
+        environments[0]?.id ||
+        null
+      );
+    });
+  }, [envModalOpen]); // Intentionally only depend on modal open
 
+  // Sync draftEnv when switching selectedEnvId
   useEffect(() => {
-    const found = environments.find((e) => e.id === selectedEnvId) || null;
-    setDraftEnv(found ? JSON.parse(JSON.stringify(found)) : null);
+    if (!selectedEnvId) {
+      setDraftEnv(null);
+      return;
+    }
+    const found = environments.find((e) => e.id === selectedEnvId);
+    if (found) {
+      setDraftEnv((prev) => {
+        // If already editing this environment, don't overwrite user's in-progress typing
+        if (prev && prev.id === found.id) {
+          return prev;
+        }
+        return JSON.parse(JSON.stringify(found));
+      });
+    } else {
+      setDraftEnv(null);
+    }
   }, [selectedEnvId, environments]);
 
   if (!activeProject) return null;
@@ -56,16 +80,18 @@ export const EnvironmentManagerModal: React.FC = () => {
     };
     const saved = await saveEnvironment(created);
     setNewEnvName("");
+    // Explicitly lock focus/selection to the newly created environment
     setSelectedEnvId(saved.id);
+    setDraftEnv(JSON.parse(JSON.stringify(saved)));
     if (!activeProject.activeEnvironmentId) {
       await setActiveEnvironmentId(saved.id);
     }
     showToast(`Created environment "${saved.name}"`);
   };
 
-  const handlePersistDraft = async (next: Environment) => {
+  const handlePersistDraft = (next: Environment) => {
     setDraftEnv(next);
-    await saveEnvironment(next);
+    saveEnvironment(next);
   };
 
   const handleVarChange = (
@@ -98,6 +124,20 @@ export const EnvironmentManagerModal: React.FC = () => {
     if (!draftEnv) return;
     const nextVars = draftEnv.variables.filter((v) => v.id !== varId);
     handlePersistDraft({ ...draftEnv, variables: nextVars });
+  };
+
+  const handleDeleteEnvironment = async () => {
+    if (!draftEnv) return;
+    const envToDeleteId = draftEnv.id;
+    await deleteEnvironment(envToDeleteId);
+    const remaining = environments.filter((e) => e.id !== envToDeleteId);
+    const nextId =
+      activeProject.activeEnvironmentId &&
+      activeProject.activeEnvironmentId !== envToDeleteId
+        ? activeProject.activeEnvironmentId
+        : remaining[0]?.id || null;
+    setSelectedEnvId(nextId);
+    showToast("Environment deleted");
   };
 
   return (
@@ -214,11 +254,7 @@ export const EnvironmentManagerModal: React.FC = () => {
                   <button
                     type="button"
                     className="btn-danger-ghost btn-xs"
-                    onClick={async () => {
-                      await deleteEnvironment(draftEnv.id);
-                      const next = environments.find((e) => e.id !== draftEnv.id);
-                      setSelectedEnvId(next?.id || null);
-                    }}
+                    onClick={handleDeleteEnvironment}
                     title="Delete environment"
                   >
                     <Trash2 size={13} />
@@ -336,4 +372,3 @@ export const EnvironmentManagerModal: React.FC = () => {
     </Modal>
   );
 };
-

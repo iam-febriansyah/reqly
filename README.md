@@ -43,6 +43,11 @@ Instead of bundling a heavy Chromium + Node.js Electron runtime, Reqly executes 
   - Dynamic `{{VARIABLE_NAME}}` interpolation with a live **Resolved URL** preview bar.
 - **Request Headers**:
   - Add, edit, toggle (`enable`/`disable`), and delete headers.
+  - **Postman-Style Autocomplete Suggestions**:
+    - **Header Key Suggestions**: Rich dropdown suggestions for 70+ standard HTTP headers (e.g. `Accept`, `Authorization`, `Content-Type`, `Cache-Control`, `User-Agent`, `X-Api-Key`) with instant descriptions.
+    - **Context-Aware Header Value Suggestions**: Automatically suggests matching MIME types and directives based on the chosen key (e.g. `application/json`, `application/x-www-form-urlencoded` for `Content-Type`; `Bearer {{token}}` for `Authorization`; `no-cache`, `max-age=0` for `Cache-Control`).
+    - **Environment Variable Suggestions**: Typing `{{` or selecting from the menu suggests active environment variables with live preview values.
+    - **Fluid Keyboard Navigation**: Navigate suggestions with `↑` / `↓` arrow keys, select with `Enter` or `Tab`, and automatically jump focus to the Value input upon selecting a Key.
   - Smart `Content-Type` management that respects user-defined headers and prevents duplicate header injection.
 - **Request Body Modes**:
   - `None`: Clean bodiless request execution.
@@ -60,14 +65,22 @@ Instead of bundling a heavy Chromium + Node.js Electron runtime, Reqly executes 
   - Configurable per-request timeout in milliseconds (default `30,000 ms`).
   - Instant in-flight request cancellation powered by `tokio::sync::watch` channels in Rust.
 
+- **Developer Controls**:
+  - **Save As... (`Ctrl+Shift+S`)**: Save the current request configuration as a new request into any folder or project.
+  - **Wrap / No Wrap Toggle**: 1-click toggle between soft line wrapping and horizontal scrolling on both Request Body and Response Viewer.
+
 ### 2. Clean & Readable Response Viewer
 - **Real-Time Telemetry**: Displays HTTP status code with semantic color coding (`2xx`, `3xx`, `4xx`, `5xx`), elapsed response time (`ms`), and payload size (`B` / `KB` / `MB`).
 - **Multi-Format Body Inspection**:
-  - **Pretty JSON**: Syntax-highlighted, auto-indented JSON viewer.
+  - **Pretty JSON**: Syntax-highlighted, auto-indented JSON viewer with live line count.
   - **Raw**: Exact unformatted UTF-8 response payload.
   - **HTML / XML**: Clean source inspection for markup responses.
   - **Image Preview**: Automatic detection of binary `image/*` responses rendered via Base64 data URIs.
-- **Developer Controls**: One-click **Copy Body**, **Copy Headers**, **Format JSON**, and **Clear Response**.
+- **Developer Controls**:
+  - **Wrap Lines**: Toggle between soft line wrapping (`Wrap: On`) and horizontal scrolling (`Wrap: Off`).
+  - **Save Response**: Export/download the response payload as a file on disk (`.json`, `.html`, `.xml`, `.csv`, `.png`, `.jpg`, `.txt`).
+  - **Save as Request**: Instantly create a new saved request from the response body.
+  - One-click **Copy Body**, **Copy Headers**, **Format JSON**, and **Clear Response**.
 
 ### 3. Independent Projects & Folder Hierarchy
 ```text
@@ -230,6 +243,7 @@ All data is stored locally in `reqly.db` inside the OS application data director
 | **Open Environment Manager** | `Ctrl + E` | `Cmd + E` |
 | **Postman v2.1 Import / Export** | `Ctrl + I` | `Cmd + I` |
 | **Prettify JSON Body** | `Ctrl + Shift + F` | `Cmd + Shift + F` |
+| **Save Request As...** | `Ctrl + Shift + S` | `Cmd + Shift + S` |
 | **Close Active Modal** | `Esc` | `Esc` |
 
 ---

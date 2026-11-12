@@ -63,6 +63,7 @@ interface AppStoreContextValue {
 
   // Request actions
   createRequest: (folderId?: string | null, initialName?: string) => Promise<SavedRequest | null>;
+  saveRequest: (req: SavedRequest) => Promise<SavedRequest>;
   openRequestTab: (requestId: string) => void;
   closeRequestTab: (requestId: string) => void;
   updateActiveRequest: (updater: (prev: SavedRequest) => SavedRequest) => void;
@@ -328,6 +329,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
           apiKeyIn: "header",
         },
         timeoutMs: 30000,
+        sslVerify: false,
         sortOrder: requests.length,
         createdAt: now,
         updatedAt: now,
@@ -342,6 +344,15 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [activeProject, requests.length]
   );
+
+  const saveRequest = useCallback(async (req: SavedRequest) => {
+    const saved = await api.saveRequest(req);
+    setRequests((prev) => {
+      const exists = prev.some((r) => r.id === saved.id);
+      return exists ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved];
+    });
+    return saved;
+  }, []);
 
   const openRequestTab = useCallback((requestId: string) => {
     setOpenTabIds((prev) =>
@@ -671,6 +682,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       renameFolder,
       deleteFolder,
       createRequest,
+      saveRequest,
       openRequestTab,
       closeRequestTab,
       updateActiveRequest,
@@ -719,6 +731,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       renameFolder,
       deleteFolder,
       createRequest,
+      saveRequest,
       openRequestTab,
       closeRequestTab,
       updateActiveRequest,

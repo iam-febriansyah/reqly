@@ -113,6 +113,10 @@ impl Default for AuthConfig {
     }
 }
 
+fn default_ssl_verify() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedRequest {
@@ -127,6 +131,8 @@ pub struct SavedRequest {
     pub body: RequestBody,
     pub auth: AuthConfig,
     pub timeout_ms: u64,
+    #[serde(default = "default_ssl_verify")]
+    pub ssl_verify: bool,
     pub sort_order: i64,
     pub created_at: String,
     pub updated_at: String,

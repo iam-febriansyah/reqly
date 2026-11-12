@@ -237,6 +237,10 @@ export const MainLayout: React.FC = () => {
                   <span>Prettify JSON</span>
                   <kbd>Ctrl + Shift + F</kbd>
                 </div>
+                <div className="shortcut-row">
+                  <span>Save Request As</span>
+                  <kbd>Ctrl + Shift + S</kbd>
+                </div>
               </div>
             )}
           </div>

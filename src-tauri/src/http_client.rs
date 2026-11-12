@@ -52,8 +52,23 @@ impl CancellationRegistry {
 }
 
 fn sanitize_error_message(err: &reqwest::Error) -> String {
+    let raw = err.to_string();
     if err.is_timeout() {
         return "Request timed out while waiting for server response.".to_string();
+    }
+    let raw_lower = raw.to_lowercase();
+    if raw_lower.contains("certificate")
+        || raw_lower.contains("unknownissuer")
+        || raw_lower.contains("invaliddigest")
+        || raw_lower.contains("certexpired")
+        || raw_lower.contains("handshake")
+        || raw_lower.contains("tls")
+        || raw_lower.contains("ssl")
+    {
+        return format!(
+            "SSL/TLS Certificate Error: {}\nTip: Turn off 'SSL Verify' in the request header to connect to internal or self-signed servers.",
+            raw
+        );
     }
     if err.is_connect() {
         return format!(
@@ -66,7 +81,6 @@ fn sanitize_error_message(err: &reqwest::Error) -> String {
     if err.is_builder() {
         return "Invalid request configuration or malformed URL/header.".to_string();
     }
-    let raw = err.to_string();
     // Redact any accidental credential fragments in URLs
     if let Some(at_idx) = raw.find('@') {
         if let Some(scheme_idx) = raw[..at_idx].find("://") {
@@ -143,6 +157,7 @@ pub async fn execute_http_request(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))
         .connect_timeout(Duration::from_secs(15))
+        .danger_accept_invalid_certs(!resolved.ssl_verify)
         .build()
         .map_err(|e| format!("Failed to initialize HTTP client: {}", e))?;
 
@@ -428,6 +443,7 @@ mod tests {
                 ..Default::default()
             },
             timeout_ms: 5000,
+            ssl_verify: false,
             sort_order: 0,
             created_at: String::new(),
             updated_at: String::new(),
