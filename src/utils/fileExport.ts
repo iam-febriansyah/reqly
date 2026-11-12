@@ -1,18 +1,25 @@
 import type { HttpResponseData, SavedRequest } from "../types";
+import { api } from "../services/api";
 
 function sanitizeFilename(name: string): string {
-  return name
-    .trim()
-    .replace(/[^a-zA-Z0-9_\- ]/g, "")
-    .replace(/\s+/g, "_")
-    .replace(/_+/g, "_")
-    .toLowerCase() || "api_payload";
+  return (
+    name
+      .trim()
+      .replace(/[^a-zA-Z0-9_\- ]/g, "")
+      .replace(/\s+/g, "_")
+      .replace(/_+/g, "_")
+      .toLowerCase() || "api_payload"
+  );
 }
 
 /**
- * Triggers browser/webview download for JSON content
+ * Saves file with native OS Save As dialog so the user can choose the exact destination!
  */
-export function downloadJsonFile(filename: string, content: string | object) {
+export async function saveJsonWithDialog(
+  defaultName: string,
+  content: string | object,
+  options?: { filterName?: string; filterExt?: string; isBase64?: boolean }
+): Promise<string | null> {
   let jsonString: string;
   if (typeof content === "string") {
     try {
@@ -25,28 +32,31 @@ export function downloadJsonFile(filename: string, content: string | object) {
     jsonString = JSON.stringify(content, null, 2);
   }
 
-  const finalName = filename.endsWith(".json") ? filename : `${filename}.json`;
-  const blob = new Blob([jsonString], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = finalName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  return finalName;
+  const ext = options?.filterExt || "json";
+  const finalDefaultName = defaultName.endsWith(`.${ext}`)
+    ? defaultName
+    : `${defaultName}.${ext}`;
+
+  return api.saveFileDialog({
+    defaultName: finalDefaultName,
+    content: jsonString,
+    isBase64: options?.isBase64,
+    filterName: options?.filterName || "JSON Files (*.json)",
+    filterExt: ext,
+  });
 }
 
 /**
- * Save request body payload as a standalone JSON file
+ * Save request body payload as a standalone JSON file using native Save Dialog
  */
-export function exportRequestBodyJson(request: SavedRequest): string {
+export async function exportRequestBodyJson(
+  request: SavedRequest
+): Promise<string | null> {
   const baseName = sanitizeFilename(request.name || "request");
   const filename = `${baseName}_request.json`;
 
   if (request.body.mode === "json" || request.body.mode === "raw") {
-    return downloadJsonFile(filename, request.body.raw || "{}");
+    return saveJsonWithDialog(filename, request.body.raw || "{}");
   }
 
   if (request.body.mode === "urlencoded") {
@@ -56,7 +66,7 @@ export function exportRequestBodyJson(request: SavedRequest): string {
         obj[item.key.trim()] = item.value;
       }
     }
-    return downloadJsonFile(filename, obj);
+    return saveJsonWithDialog(filename, obj);
   }
 
   if (request.body.mode === "formdata") {
@@ -66,7 +76,7 @@ export function exportRequestBodyJson(request: SavedRequest): string {
         obj[item.key.trim()] = item.value;
       }
     }
-    return downloadJsonFile(filename, obj);
+    return saveJsonWithDialog(filename, obj);
   }
 
   // Bodiless request (e.g. GET) - export params/meta
@@ -75,30 +85,38 @@ export function exportRequestBodyJson(request: SavedRequest): string {
     url: request.url,
     params: request.params.filter((p) => p.enabled && p.key),
   };
-  return downloadJsonFile(filename, obj);
+  return saveJsonWithDialog(filename, obj);
 }
 
 /**
- * Save response body as a JSON file
+ * Save response body as a JSON file using native Save Dialog
  */
-export function exportResponseBodyJson(
+export async function exportResponseBodyJson(
   requestName: string,
   response: HttpResponseData
-): string {
+): Promise<string | null> {
   const baseName = sanitizeFilename(requestName || "response");
-  const filename = `${baseName}_response.json`;
 
-  return downloadJsonFile(filename, response.body || "{}");
+  if (response.isImage && response.imageBase64) {
+    const ext = response.contentType.split("/")[1] || "png";
+    return saveJsonWithDialog(`${baseName}.${ext}`, response.imageBase64, {
+      filterName: `Images (*.${ext})`,
+      filterExt: ext,
+      isBase64: true,
+    });
+  }
+
+  const filename = `${baseName}_response.json`;
+  return saveJsonWithDialog(filename, response.body || "{}");
 }
 
 /**
- * Save combined Request + Response contract as a JSON file
- * Ideal for frontend & backend developers handoff / documentation
+ * Save combined Request + Response contract as a JSON file using native Save Dialog
  */
-export function exportRequestResponseExchange(
+export async function exportRequestResponseExchange(
   request: SavedRequest,
   response: HttpResponseData
-): string {
+): Promise<string | null> {
   const baseName = sanitizeFilename(request.name || "exchange");
   const filename = `${baseName}_contract.json`;
 
@@ -144,6 +162,5 @@ export function exportRequestResponseExchange(
     },
   };
 
-  return downloadJsonFile(filename, contract);
+  return saveJsonWithDialog(filename, contract);
 }
-

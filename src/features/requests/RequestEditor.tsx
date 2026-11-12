@@ -243,11 +243,13 @@ export const RequestEditor: React.FC = () => {
           <button
             type="button"
             className="btn-ghost btn-xs request-export-json-btn"
-            onClick={() => {
-              const fname = exportRequestBodyJson(activeRequest);
-              showToast(`Saved request body to ${fname}`);
+            onClick={async () => {
+              const savedPath = await exportRequestBodyJson(activeRequest);
+              if (savedPath) {
+                showToast(`Saved to ${savedPath}`);
+              }
             }}
-            title="Save Request Body as JSON file (Download to share with backend / frontend)"
+            title="Save Request Body as JSON file (Choose destination folder)"
           >
             <Download size={12} />
             <span>Save Request JSON</span>
@@ -593,11 +595,13 @@ export const RequestEditor: React.FC = () => {
                   }))
                 }
                 placeholder={'{\n  "name": "Example",\n  "userId": "{{USER_ID}}"\n}'}
-                onSaveFile={() => {
-                  const fname = exportRequestBodyJson(activeRequest);
-                  showToast(`Saved request body to ${fname}`);
+                onSaveFile={async () => {
+                  const savedPath = await exportRequestBodyJson(activeRequest);
+                  if (savedPath) {
+                    showToast(`Saved to ${savedPath}`);
+                  }
                 }}
-                saveButtonTitle="Save Request Body as JSON file to share with backend / frontend"
+                saveButtonTitle="Save Request Body as JSON file (Choose destination folder)"
               />
             )}
 
@@ -612,11 +616,13 @@ export const RequestEditor: React.FC = () => {
                   }))
                 }
                 placeholder="Enter raw request body text..."
-                onSaveFile={() => {
-                  const fname = exportRequestBodyJson(activeRequest);
-                  showToast(`Saved request body to ${fname}`);
+                onSaveFile={async () => {
+                  const savedPath = await exportRequestBodyJson(activeRequest);
+                  if (savedPath) {
+                    showToast(`Saved to ${savedPath}`);
+                  }
                 }}
-                saveButtonTitle="Save Request Body as JSON file to share with backend / frontend"
+                saveButtonTitle="Save Request Body as JSON file (Choose destination folder)"
               />
             )}
 

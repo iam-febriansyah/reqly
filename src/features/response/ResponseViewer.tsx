@@ -126,32 +126,23 @@ export const ResponseViewer: React.FC = () => {
     }
   };
 
-  const handleSaveResponseJson = () => {
+  const handleSaveResponseJson = async () => {
     if (!response) return;
-    if (response.isImage && response.imageBase64) {
-      const safeName = (activeRequest?.name || "image")
-        .replace(/[^a-zA-Z0-9_-]/g, "_")
-        .replace(/_+/g, "_");
-      const a = document.createElement("a");
-      a.href = response.imageBase64;
-      a.download = `${safeName}.${response.contentType.split("/")[1] || "png"}`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      showToast(`Image response saved as ${a.download}`);
-      return;
-    }
-    const filename = exportResponseBodyJson(
+    const savedPath = await exportResponseBodyJson(
       activeRequest?.name || "response",
       response
     );
-    showToast(`Saved response to ${filename}`);
+    if (savedPath) {
+      showToast(`Saved to ${savedPath}`);
+    }
   };
 
-  const handleSaveExchangeJson = () => {
+  const handleSaveExchangeJson = async () => {
     if (!response || !activeRequest) return;
-    const filename = exportRequestResponseExchange(activeRequest, response);
-    showToast(`Saved contract to ${filename}`);
+    const savedPath = await exportRequestResponseExchange(activeRequest, response);
+    if (savedPath) {
+      showToast(`Saved to ${savedPath}`);
+    }
   };
 
   const handleSaveResponseAsRequest = async () => {

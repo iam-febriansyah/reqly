@@ -229,3 +229,69 @@ pub fn import_postman_collection_cmd(
     import_postman_collection(&state.db, &json_content)
 }
 
+#[tauri::command]
+pub async fn save_file_dialog(
+    default_name: String,
+    content: String,
+    is_base64: Option<bool>,
+    filter_name: String,
+    filter_ext: String,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_file_name(&default_name);
+    if !filter_name.is_empty() && !filter_ext.is_empty() {
+        dialog = dialog.add_filter(&filter_name, &[&filter_ext]);
+    }
+
+    if let Some(file_handle) = dialog.save_file().await {
+        let path = file_handle.path().to_string_lossy().to_string();
+        if is_base64.unwrap_or(false) {
+            use base64::Engine;
+            let raw_b64 = if let Some(idx) = content.find(";base64,") {
+                &content[idx + 8..]
+            } else {
+                &content
+            };
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(raw_b64)
+                .map_err(|e| format!("Base64 decode error: {}", e))?;
+            file_handle.write(&bytes).await.map_err(|e| e.to_string())?;
+        } else {
+            file_handle
+                .write(content.as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn show_in_file_manager(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+

@@ -941,5 +941,42 @@ export const api = {
     saveFallbackDb(db);
     return p;
   },
+
+  async saveFileDialog(options: {
+    defaultName: string;
+    content: string;
+    isBase64?: boolean;
+    filterName?: string;
+    filterExt?: string;
+  }): Promise<string | null> {
+    if (isTauriRuntime()) {
+      return invoke<string | null>("save_file_dialog", {
+        defaultName: options.defaultName,
+        content: options.content,
+        isBase64: options.isBase64 || false,
+        filterName: options.filterName || "JSON",
+        filterExt: options.filterExt || "json",
+      });
+    }
+    // Web fallback
+    const blob = new Blob([options.content], {
+      type: options.isBase64 ? "image/png" : "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = options.defaultName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return options.defaultName;
+  },
+
+  async showInFileManager(path: string): Promise<void> {
+    if (isTauriRuntime()) {
+      return invoke<void>("show_in_file_manager", { path });
+    }
+  },
 };
 

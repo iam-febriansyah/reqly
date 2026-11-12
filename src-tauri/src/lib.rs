@@ -56,6 +56,8 @@ pub fn run() {
             commands::remove_history_item,
             commands::export_postman_collection,
             commands::import_postman_collection_cmd,
+            commands::save_file_dialog,
+            commands::show_in_file_manager,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Reqly desktop application");
