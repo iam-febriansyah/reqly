@@ -3,6 +3,7 @@ import {
   AlignLeft,
   CheckCircle2,
   AlertCircle,
+  Download,
   Minimize2,
   WrapText,
 } from "lucide-react";
@@ -17,6 +18,8 @@ interface JsonCodeEditorProps {
   wrap?: boolean;
   onWrapChange?: (wrapped: boolean) => void;
   hideToolbar?: boolean;
+  onSaveFile?: () => void;
+  saveButtonTitle?: string;
 }
 
 export function highlightJsonTokens(code: string): React.ReactNode[] {
@@ -71,6 +74,8 @@ export const JsonCodeEditor: React.FC<JsonCodeEditorProps> = ({
   wrap,
   onWrapChange,
   hideToolbar = false,
+  onSaveFile,
+  saveButtonTitle = "Save as JSON file",
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const preRef = useRef<HTMLPreElement | null>(null);
@@ -228,6 +233,18 @@ export const JsonCodeEditor: React.FC<JsonCodeEditorProps> = ({
               <WrapText size={12} />
               <span>{isWrapped ? "Wrap: On" : "Wrap: Off"}</span>
             </button>
+
+            {onSaveFile && (
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={onSaveFile}
+                title={saveButtonTitle}
+              >
+                <Download size={12} />
+                <span>Save JSON</span>
+              </button>
+            )}
           </div>
         </div>
       )}

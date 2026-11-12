@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   Eraser,
+  FileDown,
   Globe,
   Image as ImageIcon,
   Loader2,
@@ -15,6 +16,10 @@ import {
 } from "lucide-react";
 import { useAppStore } from "../../stores/useAppStore";
 import { JsonCodeEditor } from "../../components/JsonCodeEditor";
+import {
+  exportResponseBodyJson,
+  exportRequestResponseExchange,
+} from "../../utils/fileExport";
 import { generateId } from "../../services/api";
 import type { SavedRequest } from "../../types";
 
@@ -121,39 +126,12 @@ export const ResponseViewer: React.FC = () => {
     }
   };
 
-  const handleSaveResponse = () => {
+  const handleSaveResponseJson = () => {
     if (!response) return;
-    let ext = "txt";
-    let mimeType = response.contentType || "text/plain";
-    const lowerCt = (response.contentType || "").toLowerCase();
-
-    if (
-      lowerCt.includes("json") ||
-      (response.body.trim().startsWith("{") &&
-        response.body.trim().endsWith("}")) ||
-      (response.body.trim().startsWith("[") &&
-        response.body.trim().endsWith("]"))
-    ) {
-      ext = "json";
-      mimeType = "application/json";
-    } else if (lowerCt.includes("html")) {
-      ext = "html";
-      mimeType = "text/html";
-    } else if (lowerCt.includes("xml")) {
-      ext = "xml";
-      mimeType = "application/xml";
-    } else if (lowerCt.includes("csv")) {
-      ext = "csv";
-      mimeType = "text/csv";
-    }
-
-    const reqName = activeRequest?.name || "response";
-    const safeName = reqName
-      .replace(/[^a-zA-Z0-9_-]/g, "_")
-      .replace(/_+/g, "_");
-    const filename = `${safeName}_response.${ext}`;
-
     if (response.isImage && response.imageBase64) {
+      const safeName = (activeRequest?.name || "image")
+        .replace(/[^a-zA-Z0-9_-]/g, "_")
+        .replace(/_+/g, "_");
       const a = document.createElement("a");
       a.href = response.imageBase64;
       a.download = `${safeName}.${response.contentType.split("/")[1] || "png"}`;
@@ -163,21 +141,17 @@ export const ResponseViewer: React.FC = () => {
       showToast(`Image response saved as ${a.download}`);
       return;
     }
+    const filename = exportResponseBodyJson(
+      activeRequest?.name || "response",
+      response
+    );
+    showToast(`Saved response to ${filename}`);
+  };
 
-    const contentToSave = viewFormat === "pretty" ? prettyBody : response.body;
-    const blob = new Blob([contentToSave], {
-      type: `${mimeType};charset=utf-8`,
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showToast(`Response saved as ${filename}`);
+  const handleSaveExchangeJson = () => {
+    if (!response || !activeRequest) return;
+    const filename = exportRequestResponseExchange(activeRequest, response);
+    showToast(`Saved contract to ${filename}`);
   };
 
   const handleSaveResponseAsRequest = async () => {
@@ -307,21 +281,23 @@ export const ResponseViewer: React.FC = () => {
             <button
               type="button"
               className="btn-ghost btn-xs"
-              onClick={handleSaveResponse}
-              title="Save Response body to file (Download)"
+              onClick={handleSaveResponseJson}
+              title="Save Response Body as JSON file (Download to share with backend / frontend)"
             >
               <Download size={12} />
-              <span>Save Response</span>
+              <span>Save Response JSON</span>
             </button>
-            <button
-              type="button"
-              className="btn-ghost btn-xs"
-              onClick={handleSaveResponseAsRequest}
-              title="Save this response body as a new Request"
-            >
-              <BookmarkPlus size={12} />
-              <span>Save as Request</span>
-            </button>
+            {activeRequest && (
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={handleSaveExchangeJson}
+                title="Save combined Request & Response as JSON contract file for backend/frontend"
+              >
+                <FileDown size={12} />
+                <span>Save Req + Res</span>
+              </button>
+            )}
             <button
               type="button"
               className="btn-ghost btn-xs"
@@ -488,6 +464,8 @@ export const ResponseViewer: React.FC = () => {
                 onWrapChange={setWrapResponse}
                 language={isJsonLike ? "json" : "raw"}
                 value={prettyBody}
+                onSaveFile={handleSaveResponseJson}
+                saveButtonTitle="Save Response as JSON file for Backend / Frontend"
               />
             ) : viewFormat === "html" ? (
               <JsonCodeEditor
@@ -496,6 +474,8 @@ export const ResponseViewer: React.FC = () => {
                 onWrapChange={setWrapResponse}
                 language="html"
                 value={response.body}
+                onSaveFile={handleSaveResponseJson}
+                saveButtonTitle="Save Response as file for Backend / Frontend"
               />
             ) : (
               <JsonCodeEditor
@@ -504,6 +484,8 @@ export const ResponseViewer: React.FC = () => {
                 onWrapChange={setWrapResponse}
                 language="raw"
                 value={response.body}
+                onSaveFile={handleSaveResponseJson}
+                saveButtonTitle="Save Response as file for Backend / Frontend"
               />
             )}
           </div>

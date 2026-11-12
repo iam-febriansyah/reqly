@@ -4,6 +4,7 @@ import {
   BookmarkPlus,
   CheckCircle2,
   Clock,
+  Download,
   Lock,
   Play,
   Plus,
@@ -18,6 +19,7 @@ import { MethodBadge } from "../../components/MethodBadge";
 import { KeyValueTable } from "../../components/KeyValueTable";
 import { JsonCodeEditor } from "../../components/JsonCodeEditor";
 import { SaveRequestAsModal } from "./SaveRequestAsModal";
+import { exportRequestBodyJson } from "../../utils/fileExport";
 import {
   collectUnresolvedVariables,
   generateId,
@@ -50,6 +52,7 @@ export const RequestEditor: React.FC = () => {
     sendActiveRequest,
     cancelActiveRequest,
     setEnvModalOpen,
+    showToast,
   } = useAppStore();
 
   const [configTab, setConfigTab] = useState<
@@ -237,6 +240,19 @@ export const RequestEditor: React.FC = () => {
         />
 
         <div className="request-meta-controls">
+          <button
+            type="button"
+            className="btn-ghost btn-xs request-export-json-btn"
+            onClick={() => {
+              const fname = exportRequestBodyJson(activeRequest);
+              showToast(`Saved request body to ${fname}`);
+            }}
+            title="Save Request Body as JSON file (Download to share with backend / frontend)"
+          >
+            <Download size={12} />
+            <span>Save Request JSON</span>
+          </button>
+
           <button
             type="button"
             className="btn-ghost btn-xs request-save-as-btn"
@@ -577,6 +593,11 @@ export const RequestEditor: React.FC = () => {
                   }))
                 }
                 placeholder={'{\n  "name": "Example",\n  "userId": "{{USER_ID}}"\n}'}
+                onSaveFile={() => {
+                  const fname = exportRequestBodyJson(activeRequest);
+                  showToast(`Saved request body to ${fname}`);
+                }}
+                saveButtonTitle="Save Request Body as JSON file to share with backend / frontend"
               />
             )}
 
@@ -591,6 +612,11 @@ export const RequestEditor: React.FC = () => {
                   }))
                 }
                 placeholder="Enter raw request body text..."
+                onSaveFile={() => {
+                  const fname = exportRequestBodyJson(activeRequest);
+                  showToast(`Saved request body to ${fname}`);
+                }}
+                saveButtonTitle="Save Request Body as JSON file to share with backend / frontend"
               />
             )}
 
