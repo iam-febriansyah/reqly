@@ -102,8 +102,8 @@ export function inspectPostmanFallback(jsonContent: string): PostmanImportPrevie
     const { folders, requests } = countItems(items);
     const variableCount = Array.isArray(root.variable)
       ? root.variable.filter(
-          (v) => v && typeof v === "object" && asString((v as any).key).trim() !== ""
-        ).length
+        (v) => v && typeof v === "object" && asString((v as any).key).trim() !== ""
+      ).length
       : 0;
 
     return {
@@ -439,29 +439,6 @@ export function importPostmanFallback(
                 const split = splitRawUrl(rawU);
                 url = split.baseUrl;
                 params = split.params;
-              } else {
-                let built = "";
-                const proto = asString(u.protocol);
-                if (proto) built += `${proto}://`;
-                if (typeof u.host === "string") {
-                  built += u.host;
-                } else if (Array.isArray(u.host)) {
-                  built += u.host
-                    .map((h) => (typeof h === "object" && h ? asString((h as any).value) : asString(h)))
-                    .filter(Boolean)
-                    .join(".");
-                }
-                const port = asString(u.port).trim();
-                if (port) built += `:${port}`;
-                if (typeof u.path === "string" && u.path) {
-                  built += u.path.startsWith("/") ? u.path : `/${u.path}`;
-                } else if (Array.isArray(u.path)) {
-                  const parts = u.path
-                    .map((p) => (typeof p === "object" && p ? asString((p as any).value) : asString(p)))
-                    .filter(Boolean);
-                  if (parts.length > 0) built += `/${parts.join("/")}`;
-                }
-                url = built;
               }
               if (Array.isArray(u.query) && u.query.length > 0) {
                 params = u.query
@@ -701,31 +678,6 @@ export function importPostmanFallback(
     if (!primaryProject) primaryProject = proj;
   }
 
-  const globalsArr = Array.isArray(root.globals)
-    ? root.globals
-    : root.globals && typeof root.globals === "object" && Array.isArray((root.globals as any).values)
-      ? (root.globals as any).values
-      : null;
-  if (globalsArr && globalsArr.length > 0 && (primaryProject?.id || targetForEnv)) {
-    const proj = db.projects.find((p) => p.id === (primaryProject?.id || targetForEnv));
-    if (proj) {
-      const vars = extractVars(globalsArr, true);
-      const globalsEnv: Environment = {
-        id: genId(),
-        projectId: proj.id,
-        name: "Postman Globals",
-        variables: vars,
-        createdAt: now,
-        updatedAt: now,
-      };
-      db.environments.push(globalsEnv);
-      environmentsImported += 1;
-      variablesImported += vars.length;
-      if (!lastEnvId) lastEnvId = globalsEnv.id;
-      if (!primaryProject) primaryProject = proj;
-    }
-  }
-
   if (!primaryProject) {
     const fallback = db.projects.find((p) => p.id === options?.targetProjectId) || db.projects[0];
     if (!fallback) throw new Error("No projects available");
@@ -743,4 +695,3 @@ export function importPostmanFallback(
     message: `Imported dump: ${collections.length} collections, ${requestsImported} requests, ${environmentsImported} environments`,
   };
 }
-
