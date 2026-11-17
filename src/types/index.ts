@@ -139,3 +139,42 @@ export interface ProjectWorkspaceData {
 
 export type ThemeMode = "light" | "dark" | "system";
 
+export interface OpenedFilePayload {
+  fileName: string;
+  path: string;
+  sizeBytes: number;
+  content: string;
+}
+
+export type PostmanImportKind =
+  | "collection_v21"
+  | "collection_v20"
+  | "environment"
+  | "globals"
+  | "dump";
+
+export interface PostmanImportPreview {
+  kind: PostmanImportKind | string;
+  name: string;
+  description: string;
+  folderCount: number;
+  requestCount: number;
+  variableCount: number;
+  environmentCount: number;
+  collectionCount: number;
+  environmentNames: string[];
+  collectionNames: string[];
+}
+
+export interface PostmanImportResult {
+  kind: PostmanImportKind | string;
+  project: Project;
+  foldersImported: number;
+  requestsImported: number;
+  environmentsImported: number;
+  variablesImported: number;
+  environmentId: string | null;
+  message: string;
+}
+
+

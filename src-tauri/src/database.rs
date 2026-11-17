@@ -563,15 +563,36 @@ impl Database {
     }
 
     pub fn delete_folder(&self, folder_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
-        // Also delete requests directly inside the folder
-        conn.execute(
-            "DELETE FROM requests WHERE folder_id = ?1",
-            params![folder_id],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM folders WHERE id = ?1", params![folder_id])
-            .map_err(|e| e.to_string())?;
+        let mut conn = self.conn.lock().map_err(|_| "Database lock poisoned".to_string())?;
+        let mut all_ids = vec![folder_id.to_string()];
+        let mut cursor = 0;
+        while cursor < all_ids.len() {
+            let parent = all_ids[cursor].clone();
+            cursor += 1;
+            let mut stmt = conn
+                .prepare("SELECT id FROM folders WHERE parent_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let children = stmt
+                .query_map(params![parent], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            for child in children {
+                let cid = child.map_err(|e| e.to_string())?;
+                if !all_ids.contains(&cid) {
+                    all_ids.push(cid);
+                }
+            }
+        }
+
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for fid in &all_ids {
+            tx.execute("DELETE FROM requests WHERE folder_id = ?1", params![fid])
+                .map_err(|e| e.to_string())?;
+        }
+        for fid in all_ids.iter().rev() {
+            tx.execute("DELETE FROM folders WHERE id = ?1", params![fid])
+                .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 

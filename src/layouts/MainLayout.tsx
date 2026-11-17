@@ -7,7 +7,7 @@ import {
   Plus,
   Share2,
   Sun,
-  Zap,
+  Upload,
 } from "lucide-react";
 import { useAppStore } from "../stores/useAppStore";
 import { ProjectExplorer } from "../features/projects/ProjectExplorer";
@@ -24,7 +24,7 @@ export const MainLayout: React.FC = () => {
     themeMode,
     setThemeMode,
     setEnvModalOpen,
-    setImportExportModalOpen,
+    openPostmanModal,
     createRequest,
     sendActiveRequest,
     toastMessage,
@@ -61,16 +61,25 @@ export const MainLayout: React.FC = () => {
         setEnvModalOpen(true);
       } else if (mod && e.key.toLowerCase() === "i") {
         e.preventDefault();
-        setImportExportModalOpen(true);
+        openPostmanModal("import");
       }
     };
+    const preventFileNav = (e: DragEvent) => {
+      e.preventDefault();
+    };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("dragover", preventFileNav);
+    window.addEventListener("drop", preventFileNav);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("dragover", preventFileNav);
+      window.removeEventListener("drop", preventFileNav);
+    };
   }, [
     sendActiveRequest,
     createRequest,
     setEnvModalOpen,
-    setImportExportModalOpen,
+    openPostmanModal,
   ]);
 
   // 1:1 Direct Manipulation Resizer for Left Sidebar (Apple Design Principle #2)
@@ -190,8 +199,18 @@ export const MainLayout: React.FC = () => {
           <button
             type="button"
             className="btn-ghost btn-xs"
-            onClick={() => setImportExportModalOpen(true)}
-            title="Import / Export Postman Collection v2.1 (Ctrl+I)"
+            onClick={() => openPostmanModal("import")}
+            title="Import File dari Postman (Ctrl+I)"
+          >
+            <Upload size={13} />
+            <span>Import</span>
+          </button>
+
+          <button
+            type="button"
+            className="btn-ghost btn-xs"
+            onClick={() => openPostmanModal("export")}
+            title="Export Project ke Postman Collection v2.1"
           >
             <Share2 size={13} />
             <span>Postman v2.1</span>

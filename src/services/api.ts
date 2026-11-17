@@ -5,13 +5,19 @@ import type {
   Folder,
   HistoryEntry,
   HttpResponseData,
-  KeyValueItem,
+  OpenedFilePayload,
+  PostmanImportPreview,
+  PostmanImportResult,
   Project,
   ProjectWorkspaceData,
   SavedRequest,
 } from "../types";
+import {
+  importPostmanFallback,
+  inspectPostmanFallback,
+} from "../utils/postmanFallback";
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   return (
     typeof window !== "undefined" &&
     ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
@@ -474,8 +480,19 @@ export const api = {
       return invoke("delete_folder", { folderId });
     }
     const db = getFallbackDb();
-    db.folders = db.folders.filter((f) => f.id !== folderId && f.parentId !== folderId);
-    db.requests = db.requests.filter((r) => r.folderId !== folderId);
+    const toDelete = new Set<string>([folderId]);
+    let added = true;
+    while (added) {
+      added = false;
+      for (const f of db.folders) {
+        if (f.parentId && toDelete.has(f.parentId) && !toDelete.has(f.id)) {
+          toDelete.add(f.id);
+          added = true;
+        }
+      }
+    }
+    db.folders = db.folders.filter((f) => !toDelete.has(f.id));
+    db.requests = db.requests.filter((r) => !r.folderId || !toDelete.has(r.folderId));
     saveFallbackDb(db);
   },
 
@@ -846,100 +863,44 @@ export const api = {
     if (isTauriRuntime()) {
       return invoke<Project>("import_postman_collection_cmd", { jsonContent });
     }
-    const parsed = JSON.parse(jsonContent);
-    const p = await this.createProject(
-      parsed?.info?.name || "Imported Collection",
-      parsed?.info?.description || ""
-    );
-    const db = getFallbackDb();
-    if (Array.isArray(parsed?.variable) && p.activeEnvironmentId) {
-      const env = db.environments.find((e) => e.id === p.activeEnvironmentId);
-      if (env) {
-        env.variables = parsed.variable.map(
-          (v: { key?: string; value?: string; disabled?: boolean }) => ({
-            id: generateId(),
-            key: String(v.key || ""),
-            value: String(v.value ?? ""),
-            enabled: !v.disabled,
-          })
-        );
-      }
+    const res = await this.importPostmanFile({ jsonContent });
+    return res.project;
+  },
+
+  async openPostmanFileDialog(): Promise<OpenedFilePayload | null> {
+    if (isTauriRuntime()) {
+      return invoke<OpenedFilePayload | null>("open_postman_file_dialog");
     }
-    const importItems = (items: any[], folderId: string | null) => {
-      for (const item of items || []) {
-        if (Array.isArray(item.item)) {
-          const fId = generateId();
-          db.folders.push({
-            id: fId,
-            projectId: p.id,
-            parentId: folderId,
-            name: item.name || "Folder",
-            sortOrder: db.folders.length,
-            createdAt: new Date().toISOString(),
-          });
-          importItems(item.item, fId);
-        } else if (item.request) {
-          const rawUrl =
-            typeof item.request.url === "string"
-              ? item.request.url
-              : item.request.url?.raw || "";
-          const baseUrl = rawUrl.split("?")[0] || rawUrl;
-          const params: KeyValueItem[] = Array.isArray(item.request.url?.query)
-            ? item.request.url.query.map((q: any) => ({
-                id: generateId(),
-                key: String(q.key || ""),
-                value: String(q.value ?? ""),
-                description: String(q.description || ""),
-                enabled: !q.disabled,
-              }))
-            : [];
-          const headers: KeyValueItem[] = Array.isArray(item.request.header)
-            ? item.request.header.map((h: any) => ({
-                id: generateId(),
-                key: String(h.key || ""),
-                value: String(h.value ?? ""),
-                description: String(h.description || ""),
-                enabled: !h.disabled,
-              }))
-            : [];
-          db.requests.push({
-            id: generateId(),
-            projectId: p.id,
-            folderId,
-            name: item.name || "Request",
-            method: (item.request.method || "GET").toUpperCase(),
-            url: baseUrl,
-            params,
-            headers,
-            body: {
-              mode:
-                item.request.body?.mode === "raw"
-                  ? "json"
-                  : item.request.body?.mode || "none",
-              raw: item.request.body?.raw || "",
-              urlencoded: [],
-              formdata: [],
-            },
-            auth: {
-              type: "none",
-              bearerToken: "",
-              basicUsername: "",
-              basicPassword: "",
-              apiKeyName: "",
-              apiKeyValue: "",
-              apiKeyIn: "header",
-            },
-            timeoutMs: 30000,
-            sortOrder: db.requests.length,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      }
-    };
-    importItems(parsed?.item || [], null);
+    return null;
+  },
+
+  async inspectPostmanJson(jsonContent: string): Promise<PostmanImportPreview> {
+    if (isTauriRuntime()) {
+      return invoke<PostmanImportPreview>("inspect_postman_json_cmd", {
+        jsonContent,
+      });
+    }
+    return inspectPostmanFallback(jsonContent);
+  },
+
+  async importPostmanFile(options: {
+    jsonContent: string;
+    targetProjectId?: string | null;
+    nameOverride?: string | null;
+    setEnvActive?: boolean;
+  }): Promise<PostmanImportResult> {
+    if (isTauriRuntime()) {
+      return invoke<PostmanImportResult>("import_postman_file_cmd", {
+        jsonContent: options.jsonContent,
+        targetProjectId: options.targetProjectId ?? null,
+        nameOverride: options.nameOverride ?? null,
+        setEnvActive: options.setEnvActive ?? true,
+      });
+    }
+    const db = getFallbackDb();
+    const res = importPostmanFallback(db, generateId, options.jsonContent, options);
     saveFallbackDb(db);
-    return p;
+    return res;
   },
 
   async saveFileDialog(options: {

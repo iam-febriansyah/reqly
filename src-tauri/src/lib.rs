@@ -56,6 +56,9 @@ pub fn run() {
             commands::remove_history_item,
             commands::export_postman_collection,
             commands::import_postman_collection_cmd,
+            commands::inspect_postman_json_cmd,
+            commands::import_postman_file_cmd,
+            commands::open_postman_file_dialog,
             commands::save_file_dialog,
             commands::show_in_file_manager,
         ])

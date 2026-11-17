@@ -13,6 +13,7 @@ import type {
   Folder,
   HistoryEntry,
   HttpResponseData,
+  PostmanImportResult,
   Project,
   SavedRequest,
   ThemeMode,
@@ -46,6 +47,9 @@ interface AppStoreContextValue {
   setEnvModalOpen: (open: boolean) => void;
   importExportModalOpen: boolean;
   setImportExportModalOpen: (open: boolean) => void;
+  postmanModalMode: "import" | "export";
+  setPostmanModalMode: (mode: "import" | "export") => void;
+  openPostmanModal: (mode?: "import" | "export") => void;
   toastMessage: string | null;
   showToast: (msg: string) => void;
 
@@ -90,6 +94,12 @@ interface AppStoreContextValue {
   // Postman Import / Export
   exportPostmanJson: () => Promise<string>;
   importPostmanJson: (jsonContent: string) => Promise<void>;
+  importPostmanFile: (options: {
+    jsonContent: string;
+    targetProjectId?: string | null;
+    nameOverride?: string | null;
+    setEnvActive?: boolean;
+  }) => Promise<PostmanImportResult>;
 }
 
 const AppStoreContext = createContext<AppStoreContextValue | null>(null);
@@ -113,6 +123,11 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
   });
   const [envModalOpen, setEnvModalOpen] = useState(false);
   const [importExportModalOpen, setImportExportModalOpen] = useState(false);
+  const [postmanModalMode, setPostmanModalMode] = useState<"import" | "export">("import");
+  const openPostmanModal = useCallback((mode: "import" | "export" = "import") => {
+    setPostmanModalMode(mode);
+    setImportExportModalOpen(true);
+  }, []);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const saveTimerRef = useRef<Record<string, number>>({});
@@ -278,13 +293,26 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const deleteFolder = useCallback(
     async (folderId: string) => {
       await api.deleteFolder(folderId);
+      const removedFolderIds = new Set<string>([folderId]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const f of folders) {
+          if (f.parentId && removedFolderIds.has(f.parentId) && !removedFolderIds.has(f.id)) {
+            removedFolderIds.add(f.id);
+            added = true;
+          }
+        }
+      }
       const removedRequestIds = new Set(
-        requests.filter((r) => r.folderId === folderId).map((r) => r.id)
+        requests
+          .filter((r) => r.folderId && removedFolderIds.has(r.folderId))
+          .map((r) => r.id)
       );
-      setFolders((prev) =>
-        prev.filter((f) => f.id !== folderId && f.parentId !== folderId)
+      setFolders((prev) => prev.filter((f) => !removedFolderIds.has(f.id)));
+      setRequests((prev) =>
+        prev.filter((r) => !r.folderId || !removedFolderIds.has(r.folderId))
       );
-      setRequests((prev) => prev.filter((r) => r.folderId !== folderId));
       setOpenTabIds((prev) => {
         const next = prev.filter((id) => !removedRequestIds.has(id));
         if (activeRequestId && removedRequestIds.has(activeRequestId)) {
@@ -294,7 +322,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       showToast("Folder deleted");
     },
-    [activeRequestId, requests, showToast]
+    [activeRequestId, folders, requests, showToast]
   );
 
   const createRequest = useCallback(
@@ -649,6 +677,39 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [loadWorkspace, showToast]
   );
 
+  const importPostmanFile = useCallback(
+    async (options: {
+      jsonContent: string;
+      targetProjectId?: string | null;
+      nameOverride?: string | null;
+      setEnvActive?: boolean;
+    }) => {
+      const result = await api.importPostmanFile(options);
+      const all = await api.listProjects();
+      setProjects(all);
+
+      if (activeProject && result.project.id === activeProject.id) {
+        const ws = await api.loadProjectWorkspace(result.project.id);
+        setActiveProject(ws.project);
+        setFolders(ws.folders);
+        setRequests(ws.requests);
+        setEnvironments(ws.environments);
+        setHistory(ws.history);
+        if (!activeRequestId && ws.requests.length > 0) {
+          const firstId = ws.requests[0].id;
+          setOpenTabIds((prev) => (prev.includes(firstId) ? prev : [...prev, firstId]));
+          setActiveRequestId(firstId);
+        }
+      } else {
+        await loadWorkspace(result.project.id);
+      }
+
+      showToast(result.message);
+      return result;
+    },
+    [activeProject, activeRequestId, loadWorkspace, showToast]
+  );
+
   const value = useMemo<AppStoreContextValue>(
     () => ({
       projects,
@@ -671,6 +732,9 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setEnvModalOpen,
       importExportModalOpen,
       setImportExportModalOpen,
+      postmanModalMode,
+      setPostmanModalMode,
+      openPostmanModal,
       toastMessage,
       showToast,
       selectProject,
@@ -701,6 +765,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       deleteHistoryEntry,
       exportPostmanJson,
       importPostmanJson,
+      importPostmanFile,
     }),
     [
       projects,
@@ -720,6 +785,8 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setThemeMode,
       envModalOpen,
       importExportModalOpen,
+      postmanModalMode,
+      openPostmanModal,
       toastMessage,
       showToast,
       selectProject,
@@ -750,6 +817,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       deleteHistoryEntry,
       exportPostmanJson,
       importPostmanJson,
+      importPostmanFile,
     ]
   );
 

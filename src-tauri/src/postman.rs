@@ -1,6 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::path::Path;
 use uuid::Uuid;
 
 use crate::database::Database;
@@ -25,7 +26,7 @@ pub struct PostmanCollection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostmanInfo {
-    #[serde(rename = "_postman_id", default = " generate_uuid")]
+    #[serde(rename = "_postman_id", default = "generate_uuid")]
     pub postman_id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -156,6 +157,34 @@ pub struct PostmanAuthAttribute {
     pub attr_type: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportPreview {
+    pub kind: String,
+    pub name: String,
+    pub description: String,
+    pub folder_count: usize,
+    pub request_count: usize,
+    pub variable_count: usize,
+    pub environment_count: usize,
+    pub collection_count: usize,
+    pub environment_names: Vec<String>,
+    pub collection_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostmanImportResult {
+    pub kind: String,
+    pub project: Project,
+    pub folders_imported: usize,
+    pub requests_imported: usize,
+    pub environments_imported: usize,
+    pub variables_imported: usize,
+    pub environment_id: Option<String>,
+    pub message: String,
+}
+
 // ==================== EXPORT TO POSTMAN v2.1 ====================
 
 pub fn export_project_to_postman_v21(
@@ -164,7 +193,6 @@ pub fn export_project_to_postman_v21(
     requests: &[SavedRequest],
     environments: &[Environment],
 ) -> Result<String, String> {
-    // Gather variables from active environment (or first environment)
     let mut variables = Vec::new();
     let chosen_env = project
         .active_environment_id
@@ -208,7 +236,6 @@ fn build_folder_tree(
 ) -> Vec<PostmanItem> {
     let mut items = Vec::new();
 
-    // Child folders
     let mut child_folders: Vec<&Folder> = folders
         .iter()
         .filter(|f| f.parent_id.as_deref() == parent_id)
@@ -225,7 +252,6 @@ fn build_folder_tree(
         });
     }
 
-    // Requests in this folder level
     let mut child_requests: Vec<&SavedRequest> = requests
         .iter()
         .filter(|r| r.folder_id.as_deref() == parent_id)
@@ -496,147 +522,863 @@ fn build_postman_url_object(base_url: &str, query: Vec<PostmanKeyValue>) -> Post
     }
 }
 
-// ==================== IMPORT FROM POSTMAN v2.1 ====================
+// ==================== RESILIENT IMPORT ENGINE ====================
 
-pub fn import_postman_collection(db: &Database, json_content: &str) -> Result<Project, String> {
-    let collection: PostmanCollection = serde_json::from_str(json_content).map_err(|e| {
-        format!(
-            "Invalid Postman Collection v2.1 JSON format: {}",
-            e
-        )
+fn parse_postman_root(json_content: &str) -> Result<Value, String> {
+    let clean = json_content.trim_start_matches('\u{feff}').trim();
+    if clean.is_empty() {
+        return Err("File JSON kosong.".to_string());
+    }
+    serde_json::from_str::<Value>(clean)
+        .map_err(|e| format!("Format JSON tidak valid: {}", e))
+}
+
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn extract_description(v: Option<&Value>) -> String {
+    match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(obj)) => obj
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+fn is_kv_enabled(obj: &Map<String, Value>, default_enabled: bool) -> bool {
+    if let Some(disabled) = obj.get("disabled").and_then(Value::as_bool) {
+        return !disabled;
+    }
+    if let Some(enabled) = obj.get("enabled").and_then(Value::as_bool) {
+        return enabled;
+    }
+    default_enabled
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedPostmanKind {
+    CollectionV21,
+    CollectionV20,
+    Environment,
+    Globals,
+    Dump,
+}
+
+impl DetectedPostmanKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DetectedPostmanKind::CollectionV21 => "collection_v21",
+            DetectedPostmanKind::CollectionV20 => "collection_v20",
+            DetectedPostmanKind::Environment => "environment",
+            DetectedPostmanKind::Globals => "globals",
+            DetectedPostmanKind::Dump => "dump",
+        }
+    }
+}
+
+fn detect_postman_kind(root: &Value) -> Result<DetectedPostmanKind, String> {
+    let obj = root.as_object().ok_or_else(|| {
+        "Struktur JSON tidak dikenali sebagai file Postman (root harus berupa objek JSON)."
+            .to_string()
     })?;
 
+    // Postman Data Dump (.postman_dump.json)
+    if obj.get("collections").and_then(Value::as_array).is_some()
+        || obj.get("environments").and_then(Value::as_array).is_some()
+    {
+        return Ok(DetectedPostmanKind::Dump);
+    }
+
+    // Postman Collection v2.0 / v2.1
+    if obj.contains_key("info") || obj.get("item").and_then(Value::as_array).is_some() {
+        let schema = obj
+            .get("info")
+            .and_then(Value::as_object)
+            .and_then(|i| i.get("schema"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if schema.contains("v2.0") {
+            return Ok(DetectedPostmanKind::CollectionV20);
+        }
+        return Ok(DetectedPostmanKind::CollectionV21);
+    }
+
+    // Postman Environment / Globals (.postman_environment.json / .postman_globals.json)
+    if obj.get("values").and_then(Value::as_array).is_some() {
+        let scope = obj
+            .get("_postman_variable_scope")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if scope.eq_ignore_ascii_case("globals") {
+            return Ok(DetectedPostmanKind::Globals);
+        }
+        return Ok(DetectedPostmanKind::Environment);
+    }
+
+    Err(
+        "File JSON ini bukan format Postman Collection (v2.0/v2.1), Postman Environment, Globals, atau Postman Dump yang valid."
+            .to_string(),
+    )
+}
+
+fn count_collection_items(items: &[Value], folders: &mut usize, requests: &mut usize) {
+    for item in items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        if let Some(Value::Array(children)) = obj.get("item") {
+            *folders += 1;
+            count_collection_items(children, folders, requests);
+        } else if obj.get("request").is_some() && !obj.get("request").unwrap().is_null() {
+            *requests += 1;
+        }
+    }
+}
+
+pub fn inspect_postman_json(json_content: &str) -> Result<PostmanImportPreview, String> {
+    let root = parse_postman_root(json_content)?;
+    let kind = detect_postman_kind(&root)?;
+    let obj = root.as_object().ok_or("Invalid JSON object")?;
+
+    match kind {
+        DetectedPostmanKind::CollectionV21 | DetectedPostmanKind::CollectionV20 => {
+            let info = obj.get("info").and_then(Value::as_object);
+            let name = info
+                .and_then(|i| i.get("name"))
+                .map(value_to_string)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Imported Collection".to_string());
+            let description = extract_description(info.and_then(|i| i.get("description")));
+            let items = obj
+                .get("item")
+                .and_then(Value::as_array)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let mut folder_count = 0usize;
+            let mut request_count = 0usize;
+            count_collection_items(items, &mut folder_count, &mut request_count);
+
+            let variable_count = obj
+                .get("variable")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|v| {
+                            v.as_object()
+                                .and_then(|m| m.get("key"))
+                                .map(value_to_string)
+                                .map(|k| !k.trim().is_empty())
+                                .unwrap_or(false)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+
+            Ok(PostmanImportPreview {
+                kind: kind.as_str().to_string(),
+                name: name.clone(),
+                description,
+                folder_count,
+                request_count,
+                variable_count,
+                environment_count: if variable_count > 0 { 1 } else { 0 },
+                collection_count: 1,
+                environment_names: vec![],
+                collection_names: vec![name],
+            })
+        }
+        DetectedPostmanKind::Environment | DetectedPostmanKind::Globals => {
+            let default_name = if kind == DetectedPostmanKind::Globals {
+                "Postman Globals"
+            } else {
+                "Postman Environment"
+            };
+            let name = obj
+                .get("name")
+                .map(value_to_string)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default_name.to_string());
+
+            let variable_count = obj
+                .get("values")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|v| {
+                            v.as_object()
+                                .and_then(|m| m.get("key"))
+                                .map(value_to_string)
+                                .map(|k| !k.trim().is_empty())
+                                .unwrap_or(false)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+
+            Ok(PostmanImportPreview {
+                kind: kind.as_str().to_string(),
+                name: name.clone(),
+                description: String::new(),
+                folder_count: 0,
+                request_count: 0,
+                variable_count,
+                environment_count: 1,
+                collection_count: 0,
+                environment_names: vec![name],
+                collection_names: vec![],
+            })
+        }
+        DetectedPostmanKind::Dump => {
+            let collections = obj
+                .get("collections")
+                .and_then(Value::as_array)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            let environments = obj
+                .get("environments")
+                .and_then(Value::as_array)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+
+            let mut folder_count = 0usize;
+            let mut request_count = 0usize;
+            let mut variable_count = 0usize;
+            let mut collection_names = Vec::new();
+            let mut environment_names = Vec::new();
+
+            for col in collections {
+                if let Some(cobj) = col.as_object() {
+                    let cname = cobj
+                        .get("info")
+                        .and_then(Value::as_object)
+                        .and_then(|i| i.get("name"))
+                        .or_else(|| cobj.get("name"))
+                        .map(value_to_string)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "Imported Collection".to_string());
+                    collection_names.push(cname);
+                    if let Some(Value::Array(items)) = cobj.get("item") {
+                        count_collection_items(items, &mut folder_count, &mut request_count);
+                    }
+                    if let Some(Value::Array(vars)) = cobj.get("variable") {
+                        variable_count += vars.len();
+                    }
+                }
+            }
+
+            for env in environments {
+                if let Some(eobj) = env.as_object() {
+                    let ename = eobj
+                        .get("name")
+                        .map(value_to_string)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "Imported Environment".to_string());
+                    environment_names.push(ename);
+                    if let Some(Value::Array(vals)) = eobj.get("values") {
+                        variable_count += vals.len();
+                    }
+                }
+            }
+
+            let has_globals = obj
+                .get("globals")
+                .map(|g| match g {
+                    Value::Array(a) => !a.is_empty(),
+                    Value::Object(m) => m
+                        .get("values")
+                        .and_then(Value::as_array)
+                        .map(|a| !a.is_empty())
+                        .unwrap_or(false),
+                    _ => false,
+                })
+                .unwrap_or(false);
+
+            if has_globals {
+                environment_names.push("Postman Globals".to_string());
+            }
+
+            Ok(PostmanImportPreview {
+                kind: kind.as_str().to_string(),
+                name: "Postman Data Dump".to_string(),
+                description: String::new(),
+                folder_count,
+                request_count,
+                variable_count,
+                environment_count: environment_names.len(),
+                collection_count: collections.len(),
+                environment_names,
+                collection_names,
+            })
+        }
+    }
+}
+
+pub fn import_postman_collection(db: &Database, json_content: &str) -> Result<Project, String> {
+    let result = import_postman_file(db, json_content, None, None, true)?;
+    Ok(result.project)
+}
+
+pub fn import_postman_file(
+    db: &Database,
+    json_content: &str,
+    target_project_id: Option<&str>,
+    name_override: Option<&str>,
+    set_env_active: bool,
+) -> Result<PostmanImportResult, String> {
+    let root = parse_postman_root(json_content)?;
+    let kind = detect_postman_kind(&root)?;
+
+    match kind {
+        DetectedPostmanKind::CollectionV21 | DetectedPostmanKind::CollectionV20 => {
+            import_collection_value(
+                db,
+                &root,
+                kind,
+                target_project_id,
+                name_override,
+                set_env_active,
+            )
+        }
+        DetectedPostmanKind::Environment | DetectedPostmanKind::Globals => {
+            import_environment_value(db, &root, kind, target_project_id, name_override, set_env_active)
+        }
+        DetectedPostmanKind::Dump => {
+            import_dump_value(db, &root, target_project_id, set_env_active)
+        }
+    }
+}
+
+fn import_collection_value(
+    db: &Database,
+    col_val: &Value,
+    kind: DetectedPostmanKind,
+    target_project_id: Option<&str>,
+    name_override: Option<&str>,
+    set_env_active: bool,
+) -> Result<PostmanImportResult, String> {
+    let obj = col_val
+        .as_object()
+        .ok_or("Invalid Postman collection object")?;
+    let info = obj.get("info").and_then(Value::as_object);
+
+    let raw_name = info
+        .and_then(|i| i.get("name"))
+        .or_else(|| obj.get("name"))
+        .map(value_to_string)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Imported Collection".to_string());
+
+    let chosen_name = name_override
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| raw_name.clone());
+
+    let description = extract_description(info.and_then(|i| i.get("description")));
     let now = Utc::now().to_rfc3339();
-    let project_name = if collection.info.name.trim().is_empty() {
-        "Imported Collection".to_string()
-    } else {
-        collection.info.name.trim().to_string()
+
+    let (project, merging_existing) = match target_project_id {
+        Some(pid) => (db.get_project(pid)?, true),
+        None => (db.create_project(&chosen_name, &description)?, false),
     };
 
-    let project = db.create_project(&project_name, &collection.info.description)?;
+    let imported_vars = extract_variables_from_array(obj.get("variable").and_then(Value::as_array), false);
+    let variables_imported = imported_vars.len();
+    let mut environments_imported = 0usize;
+    let mut imported_env_id: Option<String> = None;
 
-    // Import collection variables into the project's active environment
-    if !collection.variable.is_empty() {
-        let envs = db.list_environments(&project.id)?;
-        if let Some(first_env) = envs.first() {
-            let mut imported_vars: Vec<EnvironmentVariable> = Vec::new();
-            for v in &collection.variable {
-                if v.key.trim().is_empty() {
-                    continue;
-                }
-                let val_str = match &v.value {
-                    Value::String(s) => s.clone(),
-                    Value::Null => String::new(),
-                    other => other.to_string(),
-                };
-                imported_vars.push(EnvironmentVariable {
-                    id: Uuid::new_v4().to_string(),
-                    key: v.key.trim().to_string(),
-                    value: val_str,
-                    enabled: !v.disabled,
-                });
-            }
-            let updated_env = Environment {
-                id: first_env.id.clone(),
+    if !imported_vars.is_empty() {
+        if merging_existing {
+            let env = Environment {
+                id: Uuid::new_v4().to_string(),
                 project_id: project.id.clone(),
-                name: "Collection Environment".to_string(),
+                name: format!("{} Env", chosen_name),
                 variables: imported_vars,
-                created_at: first_env.created_at.clone(),
+                created_at: now.clone(),
                 updated_at: now.clone(),
             };
-            db.save_environment(&updated_env)?;
+            let saved_env = db.save_environment(&env)?;
+            imported_env_id = Some(saved_env.id.clone());
+            environments_imported = 1;
+            if set_env_active {
+                db.update_project(
+                    &project.id,
+                    &project.name,
+                    &project.description,
+                    Some(saved_env.id),
+                )?;
+            }
+        } else {
+            let envs = db.list_environments(&project.id)?;
+            if let Some(first_env) = envs.first() {
+                let updated_env = Environment {
+                    id: first_env.id.clone(),
+                    project_id: project.id.clone(),
+                    name: "Collection Environment".to_string(),
+                    variables: imported_vars,
+                    created_at: first_env.created_at.clone(),
+                    updated_at: now.clone(),
+                };
+                let saved_env = db.save_environment(&updated_env)?;
+                imported_env_id = Some(saved_env.id);
+                environments_imported = 1;
+            }
         }
     }
 
-    let collection_auth = collection
-        .auth
-        .as_ref()
-        .map(convert_postman_auth)
-        .unwrap_or_default();
+    let collection_auth = extract_postman_auth(obj.get("auth")).unwrap_or_default();
+    let items = obj
+        .get("item")
+        .and_then(Value::as_array)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-    let mut sort_counter: i64 = 0;
+    let existing_max_order = if merging_existing {
+        db.list_requests(&project.id)?
+            .iter()
+            .map(|r| r.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    } else {
+        0
+    };
+
+    let mut sort_counter = existing_max_order;
+    let mut folders_imported = 0usize;
+    let mut requests_imported = 0usize;
+
     import_items_recursive(
         db,
         &project.id,
         None,
-        &collection.item,
+        items,
         &collection_auth,
         &mut sort_counter,
+        &mut folders_imported,
+        &mut requests_imported,
     )?;
 
-    db.get_project(&project.id)
+    let final_project = db.get_project(&project.id)?;
+    let message = if merging_existing {
+        format!(
+            "Imported {} requests & {} folders into \"{}\"",
+            requests_imported, folders_imported, final_project.name
+        )
+    } else {
+        format!(
+            "Imported collection \"{}\" ({} requests, {} folders)",
+            final_project.name, requests_imported, folders_imported
+        )
+    };
+
+    Ok(PostmanImportResult {
+        kind: kind.as_str().to_string(),
+        project: final_project,
+        folders_imported,
+        requests_imported,
+        environments_imported,
+        variables_imported,
+        environment_id: imported_env_id,
+        message,
+    })
+}
+
+fn import_environment_value(
+    db: &Database,
+    env_val: &Value,
+    kind: DetectedPostmanKind,
+    target_project_id: Option<&str>,
+    name_override: Option<&str>,
+    set_env_active: bool,
+) -> Result<PostmanImportResult, String> {
+    let obj = env_val
+        .as_object()
+        .ok_or("Invalid Postman environment JSON object")?;
+
+    let default_name = if kind == DetectedPostmanKind::Globals {
+        "Postman Globals"
+    } else {
+        "Imported Environment"
+    };
+
+    let raw_name = obj
+        .get("name")
+        .map(value_to_string)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default_name.to_string());
+
+    let chosen_name = name_override
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(raw_name);
+
+    let project = match target_project_id {
+        Some(pid) => db.get_project(pid)?,
+        None => {
+            let projects = db.list_projects()?;
+            if let Some(first) = projects.into_iter().next() {
+                first
+            } else {
+                db.create_project("Imported Workspace", "")?
+            }
+        }
+    };
+
+    let variables = extract_variables_from_array(obj.get("values").and_then(Value::as_array), true);
+    let variables_imported = variables.len();
+    let now = Utc::now().to_rfc3339();
+
+    let new_env = Environment {
+        id: Uuid::new_v4().to_string(),
+        project_id: project.id.clone(),
+        name: chosen_name.clone(),
+        variables,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    let saved_env = db.save_environment(&new_env)?;
+    if set_env_active {
+        db.update_project(
+            &project.id,
+            &project.name,
+            &project.description,
+            Some(saved_env.id.clone()),
+        )?;
+    }
+
+    let final_project = db.get_project(&project.id)?;
+    Ok(PostmanImportResult {
+        kind: kind.as_str().to_string(),
+        project: final_project,
+        folders_imported: 0,
+        requests_imported: 0,
+        environments_imported: 1,
+        variables_imported,
+        environment_id: Some(saved_env.id),
+        message: format!(
+            "Imported environment \"{}\" ({} variables)",
+            saved_env.name, variables_imported
+        ),
+    })
+}
+
+fn import_dump_value(
+    db: &Database,
+    dump_val: &Value,
+    target_project_id: Option<&str>,
+    set_env_active: bool,
+) -> Result<PostmanImportResult, String> {
+    let obj = dump_val
+        .as_object()
+        .ok_or("Invalid Postman data dump object")?;
+
+    let collections = obj
+        .get("collections")
+        .and_then(Value::as_array)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    let environments = obj
+        .get("environments")
+        .and_then(Value::as_array)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let mut folders_imported = 0usize;
+    let mut requests_imported = 0usize;
+    let mut environments_imported = 0usize;
+    let mut variables_imported = 0usize;
+    let mut primary_project: Option<Project> = None;
+    let mut last_env_id: Option<String> = None;
+
+    for col in collections {
+        if col.is_object() {
+            let res = import_collection_value(
+                db,
+                col,
+                DetectedPostmanKind::CollectionV21,
+                None,
+                None,
+                true,
+            )?;
+            folders_imported += res.folders_imported;
+            requests_imported += res.requests_imported;
+            environments_imported += res.environments_imported;
+            variables_imported += res.variables_imported;
+            if primary_project.is_none() {
+                primary_project = Some(res.project);
+            }
+        }
+    }
+
+    let mut env_target_project_id: Option<String> = primary_project
+        .as_ref()
+        .map(|p| p.id.clone())
+        .or_else(|| target_project_id.map(str::to_string));
+
+    for (idx, env) in environments.iter().enumerate() {
+        if env.is_object() {
+            let res = import_environment_value(
+                db,
+                env,
+                DetectedPostmanKind::Environment,
+                env_target_project_id.as_deref(),
+                None,
+                set_env_active && idx == 0,
+            )?;
+            environments_imported += 1;
+            variables_imported += res.variables_imported;
+            last_env_id = res.environment_id;
+            if primary_project.is_none() {
+                env_target_project_id = Some(res.project.id.clone());
+                primary_project = Some(res.project);
+            }
+        }
+    }
+
+    if let Some(globals_val) = obj.get("globals") {
+        let globals_array = match globals_val {
+            Value::Array(arr) => Some(arr),
+            Value::Object(m) => m.get("values").and_then(Value::as_array),
+            _ => None,
+        };
+        if let Some(arr) = globals_array {
+            if !arr.is_empty() {
+                let synthetic = json!({
+                    "name": "Postman Globals",
+                    "values": arr
+                });
+                let res = import_environment_value(
+                    db,
+                    &synthetic,
+                    DetectedPostmanKind::Globals,
+                    env_target_project_id.as_deref(),
+                    None,
+                    false,
+                )?;
+                environments_imported += 1;
+                variables_imported += res.variables_imported;
+                if last_env_id.is_none() {
+                    last_env_id = res.environment_id;
+                }
+                if primary_project.is_none() {
+                    primary_project = Some(res.project);
+                }
+            }
+        }
+    }
+
+    let final_project = match primary_project {
+        Some(p) => db.get_project(&p.id)?,
+        None => match target_project_id {
+            Some(pid) => db.get_project(pid)?,
+            None => {
+                let projects = db.list_projects()?;
+                projects
+                    .into_iter()
+                    .next()
+                    .ok_or("No projects available in workspace")?
+            }
+        },
+    };
+
+    Ok(PostmanImportResult {
+        kind: DetectedPostmanKind::Dump.as_str().to_string(),
+        project: final_project,
+        folders_imported,
+        requests_imported,
+        environments_imported,
+        variables_imported,
+        environment_id: last_env_id,
+        message: format!(
+            "Imported dump: {} collections, {} requests, {} environments",
+            collections.len(),
+            requests_imported,
+            environments_imported
+        ),
+    })
+}
+
+fn extract_variables_from_array(
+    arr_opt: Option<&Vec<Value>>,
+    default_enabled: bool,
+) -> Vec<EnvironmentVariable> {
+    let Some(arr) = arr_opt else {
+        return Vec::new();
+    };
+    let mut vars = Vec::new();
+    for item in arr {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let key = obj
+            .get("key")
+            .map(value_to_string)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if key.is_empty() {
+            continue;
+        }
+        let val = obj
+            .get("value")
+            .map(value_to_string)
+            .unwrap_or_default();
+        let enabled = is_kv_enabled(obj, default_enabled);
+        vars.push(EnvironmentVariable {
+            id: Uuid::new_v4().to_string(),
+            key,
+            value: val,
+            enabled,
+        });
+    }
+    vars
 }
 
 fn import_items_recursive(
     db: &Database,
     project_id: &str,
     parent_folder_id: Option<String>,
-    items: &[PostmanItem],
+    items: &[Value],
     inherited_auth: &AuthConfig,
     sort_counter: &mut i64,
+    folders_imported: &mut usize,
+    requests_imported: &mut usize,
 ) -> Result<(), String> {
     for item in items {
-        if let Some(children) = &item.item {
-            // Folder node
-            let folder = db.create_folder(project_id, parent_folder_id.clone(), &item.name)?;
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        let name = obj
+            .get("name")
+            .map(value_to_string)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Untitled".to_string());
+
+        if let Some(Value::Array(children)) = obj.get("item") {
+            let folder = db.create_folder(project_id, parent_folder_id.clone(), &name)?;
+            *folders_imported += 1;
+            let folder_auth = extract_postman_auth(obj.get("auth"))
+                .unwrap_or_else(|| inherited_auth.clone());
             import_items_recursive(
                 db,
                 project_id,
                 Some(folder.id),
                 children,
-                inherited_auth,
+                &folder_auth,
                 sort_counter,
+                folders_imported,
+                requests_imported,
             )?;
-        } else if let Some(pm_req) = &item.request {
-            let saved = convert_postman_request(
+        } else if let Some(req_val) = obj.get("request") {
+            if req_val.is_null() {
+                continue;
+            }
+            let saved = convert_postman_request_value(
                 project_id,
                 parent_folder_id.clone(),
-                &item.name,
-                pm_req,
+                &name,
+                req_val,
                 inherited_auth,
                 *sort_counter,
             );
             *sort_counter += 1;
+            *requests_imported += 1;
             db.save_request(&saved)?;
         }
     }
     Ok(())
 }
 
-fn convert_postman_request(
+fn convert_postman_request_value(
     project_id: &str,
     folder_id: Option<String>,
     name: &str,
-    pm_req: &PostmanRequest,
+    req_val: &Value,
     inherited_auth: &AuthConfig,
     sort_order: i64,
 ) -> SavedRequest {
     let now = Utc::now().to_rfc3339();
-    let (base_url, params) = extract_url_and_params(&pm_req.url);
 
-    let headers: Vec<KeyValueItem> = pm_req
-        .header
-        .iter()
-        .filter(|h| !h.key.trim().is_empty())
-        .map(|h| KeyValueItem {
+    if let Some(url_str) = req_val.as_str() {
+        let (base_url, params) = split_raw_url_and_query(url_str);
+        return SavedRequest {
             id: Uuid::new_v4().to_string(),
-            key: h.key.trim().to_string(),
-            value: h.value.clone().unwrap_or_default(),
-            description: h.description.clone(),
-            enabled: !h.disabled,
-        })
-        .collect();
+            project_id: project_id.to_string(),
+            folder_id,
+            name: name.to_string(),
+            method: "GET".to_string(),
+            url: base_url,
+            params,
+            headers: Vec::new(),
+            body: RequestBody::default(),
+            auth: inherited_auth.clone(),
+            timeout_ms: 30000,
+            ssl_verify: false,
+            sort_order,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+    }
 
-    let body = pm_req
-        .body
-        .as_ref()
-        .map(|b| convert_postman_body(b, &headers))
+    let empty_map = Map::new();
+    let req_obj = req_val.as_object().unwrap_or(&empty_map);
+
+    let method = req_obj
+        .get("method")
+        .map(value_to_string)
+        .map(|s| s.trim().to_uppercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "GET".to_string());
+
+    let (base_url, params) = extract_url_and_params_value(req_obj.get("url"));
+
+    let headers: Vec<KeyValueItem> = req_obj
+        .get("header")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|h| h.as_object())
+                .filter_map(|h| {
+                    let key = h
+                        .get("key")
+                        .map(value_to_string)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
+                    if key.is_empty() {
+                        return None;
+                    }
+                    Some(KeyValueItem {
+                        id: Uuid::new_v4().to_string(),
+                        key,
+                        value: h.get("value").map(value_to_string).unwrap_or_default(),
+                        description: extract_description(h.get("description")),
+                        enabled: is_kv_enabled(h, true),
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
-    let auth = pm_req
-        .auth
-        .as_ref()
-        .map(convert_postman_auth)
+    let body = convert_postman_body_value(req_obj.get("body"), &headers);
+
+    let auth = extract_postman_auth(req_obj.get("auth"))
         .unwrap_or_else(|| inherited_auth.clone());
 
     SavedRequest {
@@ -648,7 +1390,7 @@ fn convert_postman_request(
         } else {
             name.trim().to_string()
         },
-        method: pm_req.method.trim().to_uppercase(),
+        method,
         url: base_url,
         params,
         headers,
@@ -662,81 +1404,126 @@ fn convert_postman_request(
     }
 }
 
-fn extract_url_and_params(pm_url: &PostmanUrl) -> (String, Vec<KeyValueItem>) {
-    match pm_url {
-        PostmanUrl::Simple(raw) => split_raw_url_and_query(raw),
-        PostmanUrl::Structured(obj) => {
-            let mut params: Vec<KeyValueItem> = obj
-                .query
-                .iter()
-                .filter(|q| !q.key.trim().is_empty())
-                .map(|q| KeyValueItem {
-                    id: Uuid::new_v4().to_string(),
-                    key: q.key.trim().to_string(),
-                    value: q.value.clone().unwrap_or_default(),
-                    description: q.description.clone(),
-                    enabled: !q.disabled,
+fn extract_url_and_params_value(url_opt: Option<&Value>) -> (String, Vec<KeyValueItem>) {
+    let Some(url_val) = url_opt else {
+        return (String::new(), Vec::new());
+    };
+    if url_val.is_null() {
+        return (String::new(), Vec::new());
+    }
+    if let Some(raw) = url_val.as_str() {
+        return split_raw_url_and_query(raw);
+    }
+    let Some(obj) = url_val.as_object() else {
+        return (String::new(), Vec::new());
+    };
+
+    let mut params: Vec<KeyValueItem> = obj
+        .get("query")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|q| q.as_object())
+                .filter_map(|q| {
+                    let key = q
+                        .get("key")
+                        .map(value_to_string)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
+                    if key.is_empty() {
+                        return None;
+                    }
+                    Some(KeyValueItem {
+                        id: Uuid::new_v4().to_string(),
+                        key,
+                        value: q.get("value").map(value_to_string).unwrap_or_default(),
+                        description: extract_description(q.get("description")),
+                        enabled: is_kv_enabled(q, true),
+                    })
                 })
-                .collect();
+                .collect()
+        })
+        .unwrap_or_default();
 
-            if !obj.raw.trim().is_empty() {
-                let (clean_base, raw_params) = split_raw_url_and_query(&obj.raw);
-                if params.is_empty() {
-                    params = raw_params;
-                }
-                return (clean_base, params);
-            }
+    let raw_str = obj
+        .get("raw")
+        .map(value_to_string)
+        .unwrap_or_default();
 
-            // Reconstruct URL from protocol + host + port + path if `raw` was omitted
-            let mut built = String::new();
-            if let Some(proto) = &obj.protocol {
-                built.push_str(proto);
-                built.push_str("://");
-            }
-            if let Some(host_val) = &obj.host {
-                match host_val {
-                    Value::String(s) => built.push_str(s),
-                    Value::Array(arr) => {
-                        let parts: Vec<String> = arr
-                            .iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect();
-                        built.push_str(&parts.join("."));
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(port) = &obj.port {
-                if !port.is_empty() {
-                    built.push(':');
-                    built.push_str(port);
-                }
-            }
-            if let Some(path_val) = &obj.path {
-                match path_val {
-                    Value::String(s) => {
-                        if !s.starts_with('/') {
-                            built.push('/');
-                        }
-                        built.push_str(s);
-                    }
-                    Value::Array(arr) => {
-                        let parts: Vec<String> = arr
-                            .iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect();
-                        if !parts.is_empty() {
-                            built.push('/');
-                            built.push_str(&parts.join("/"));
-                        }
-                    }
-                    _ => {}
-                }
-            }
+    if !raw_str.trim().is_empty() {
+        let (clean_base, raw_params) = split_raw_url_and_query(&raw_str);
+        if params.is_empty() {
+            params = raw_params;
+        }
+        return (clean_base, params);
+    }
 
-            (built, params)
+    let mut built = String::new();
+    if let Some(proto) = obj
+        .get("protocol")
+        .map(value_to_string)
+        .filter(|s| !s.is_empty())
+    {
+        built.push_str(&proto);
+        built.push_str("://");
+    }
+
+    if let Some(host_val) = obj.get("host") {
+        match host_val {
+            Value::String(s) => built.push_str(s),
+            Value::Array(arr) => {
+                let parts: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Object(m) => m.get("value").and_then(Value::as_str).map(|s| s.to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                built.push_str(&parts.join("."));
+            }
+            _ => {}
         }
     }
+
+    if let Some(port_val) = obj.get("port") {
+        let port_str = value_to_string(port_val);
+        if !port_str.trim().is_empty() {
+            built.push(':');
+            built.push_str(port_str.trim());
+        }
+    }
+
+    if let Some(path_val) = obj.get("path") {
+        match path_val {
+            Value::String(s) if !s.is_empty() => {
+                if !s.starts_with('/') {
+                    built.push('/');
+                }
+                built.push_str(s);
+            }
+            Value::Array(arr) => {
+                let parts: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) if !s.is_empty() => Some(s.clone()),
+                        Value::Object(m) => m
+                            .get("value")
+                            .map(value_to_string)
+                            .filter(|s| !s.is_empty()),
+                        _ => None,
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    built.push('/');
+                    built.push_str(&parts.join("/"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (built, params)
 }
 
 fn split_raw_url_and_query(raw: &str) -> (String, Vec<KeyValueItem>) {
@@ -746,8 +1533,10 @@ fn split_raw_url_and_query(raw: &str) -> (String, Vec<KeyValueItem>) {
     };
     let base = trimmed[..q_idx].to_string();
     let query_str = &trimmed[q_idx + 1..];
+    // Strip optional URL hash fragment from query if present
+    let query_part = query_str.split('#').next().unwrap_or(query_str);
     let mut params = Vec::new();
-    for pair in query_str.split('&') {
+    for pair in query_part.split('&') {
         if pair.is_empty() {
             continue;
         }
@@ -767,16 +1556,28 @@ fn split_raw_url_and_query(raw: &str) -> (String, Vec<KeyValueItem>) {
     (base, params)
 }
 
-fn convert_postman_body(pm_body: &PostmanBody, headers: &[KeyValueItem]) -> RequestBody {
-    match pm_body.mode.as_str() {
+fn convert_postman_body_value(body_opt: Option<&Value>, headers: &[KeyValueItem]) -> RequestBody {
+    let Some(body_val) = body_opt else {
+        return RequestBody::default();
+    };
+    let Some(obj) = body_val.as_object() else {
+        return RequestBody::default();
+    };
+
+    let mode = obj
+        .get("mode")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_lowercase();
+
+    match mode.as_str() {
         "raw" => {
-            let raw_text = pm_body.raw.clone().unwrap_or_default();
-            let lang_is_json = pm_body
-                .options
-                .as_ref()
+            let raw_text = obj.get("raw").map(value_to_string).unwrap_or_default();
+            let lang_is_json = obj
+                .get("options")
                 .and_then(|o| o.get("raw"))
                 .and_then(|r| r.get("language"))
-                .and_then(|l| l.as_str())
+                .and_then(Value::as_str)
                 .map(|l| l.eq_ignore_ascii_case("json"))
                 .unwrap_or(false);
 
@@ -791,31 +1592,56 @@ fn convert_postman_body(pm_body: &PostmanBody, headers: &[KeyValueItem]) -> Requ
                     || (t.starts_with('[') && t.ends_with(']'))
             };
 
-            let mode = if lang_is_json || header_is_json || looks_like_json {
+            let target_mode = if lang_is_json || header_is_json || looks_like_json {
                 "json"
             } else {
                 "raw"
             };
 
             RequestBody {
-                mode: mode.to_string(),
+                mode: target_mode.to_string(),
                 raw: raw_text,
                 urlencoded: Vec::new(),
                 formdata: Vec::new(),
             }
         }
+        "graphql" => {
+            let gql = obj.get("graphql").and_then(Value::as_object);
+            let query = gql
+                .and_then(|g| g.get("query"))
+                .map(value_to_string)
+                .unwrap_or_default();
+            let vars_val = gql.and_then(|g| g.get("variables")).map(|v| match v {
+                Value::String(s) if !s.trim().is_empty() => {
+                    serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+                }
+                Value::String(_) | Value::Null => json!({}),
+                other => other.clone(),
+            });
+            let payload = match vars_val {
+                Some(vars) => json!({ "query": query, "variables": vars }),
+                None => json!({ "query": query }),
+            };
+            RequestBody {
+                mode: "json".to_string(),
+                raw: serde_json::to_string_pretty(&payload).unwrap_or_default(),
+                urlencoded: Vec::new(),
+                formdata: Vec::new(),
+            }
+        }
         "urlencoded" => {
-            let items = pm_body
-                .urlencoded
-                .as_ref()
+            let items = obj
+                .get("urlencoded")
+                .and_then(Value::as_array)
                 .map(|list| {
                     list.iter()
+                        .filter_map(|kv| kv.as_object())
                         .map(|kv| KeyValueItem {
                             id: Uuid::new_v4().to_string(),
-                            key: kv.key.clone(),
-                            value: kv.value.clone().unwrap_or_default(),
-                            description: kv.description.clone(),
-                            enabled: !kv.disabled,
+                            key: kv.get("key").map(value_to_string).unwrap_or_default(),
+                            value: kv.get("value").map(value_to_string).unwrap_or_default(),
+                            description: extract_description(kv.get("description")),
+                            enabled: is_kv_enabled(kv, true),
                         })
                         .collect()
                 })
@@ -829,32 +1655,51 @@ fn convert_postman_body(pm_body: &PostmanBody, headers: &[KeyValueItem]) -> Requ
             }
         }
         "formdata" => {
-            let fields = pm_body
-                .formdata
-                .as_ref()
+            let fields = obj
+                .get("formdata")
+                .and_then(Value::as_array)
                 .map(|list| {
                     list.iter()
+                        .filter_map(|kv| kv.as_object())
                         .map(|kv| {
                             let ftype = kv
-                                .field_type
-                                .clone()
-                                .unwrap_or_else(|| "text".to_string());
-                            let val = if ftype == "file" {
-                                kv.src
-                                    .as_ref()
-                                    .and_then(|s| s.as_str().map(|st| st.to_string()))
-                                    .or_else(|| kv.value.clone())
-                                    .unwrap_or_default()
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .map(|s| if s == "file" { "file" } else { "text" })
+                                .unwrap_or("text")
+                                .to_string();
+
+                            let (val, file_name) = if ftype == "file" {
+                                let src_path = match kv.get("src") {
+                                    Some(Value::String(s)) => s.clone(),
+                                    Some(Value::Array(arr)) => arr
+                                        .first()
+                                        .map(value_to_string)
+                                        .unwrap_or_default(),
+                                    _ => kv.get("value").map(value_to_string).unwrap_or_default(),
+                                };
+                                let fname = if !src_path.trim().is_empty() {
+                                    Path::new(&src_path)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                } else {
+                                    None
+                                };
+                                (src_path, fname)
                             } else {
-                                kv.value.clone().unwrap_or_default()
+                                (
+                                    kv.get("value").map(value_to_string).unwrap_or_default(),
+                                    None,
+                                )
                             };
+
                             MultipartField {
                                 id: Uuid::new_v4().to_string(),
-                                key: kv.key.clone(),
+                                key: kv.get("key").map(value_to_string).unwrap_or_default(),
                                 value: val,
                                 field_type: ftype,
-                                file_name: None,
-                                enabled: !kv.disabled,
+                                file_name,
+                                enabled: is_kv_enabled(kv, true),
                             }
                         })
                         .collect()
@@ -872,46 +1717,65 @@ fn convert_postman_body(pm_body: &PostmanBody, headers: &[KeyValueItem]) -> Requ
     }
 }
 
-fn convert_postman_auth(pm_auth: &PostmanAuth) -> AuthConfig {
-    let find_attr = |attrs: &Option<Vec<PostmanAuthAttribute>>, target_key: &str| -> String {
-        attrs
-            .as_ref()
-            .and_then(|list| list.iter().find(|a| a.key == target_key))
-            .map(|a| match &a.value {
-                Value::String(s) => s.clone(),
-                Value::Null => String::new(),
-                other => other.to_string(),
-            })
-            .unwrap_or_default()
+fn extract_postman_auth(auth_opt: Option<&Value>) -> Option<AuthConfig> {
+    let auth_val = auth_opt?;
+    if auth_val.is_null() {
+        return None;
+    }
+    let obj = auth_val.as_object()?;
+    let auth_type = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_lowercase();
+
+    let find_auth_attr = |block_name: &str, target_key: &str| -> String {
+        match obj.get(block_name) {
+            // Postman v2.1 array: [{ "key": "token", "value": "..." }]
+            Some(Value::Array(list)) => list
+                .iter()
+                .filter_map(|item| item.as_object())
+                .find(|m| m.get("key").and_then(Value::as_str) == Some(target_key))
+                .and_then(|m| m.get("value"))
+                .map(value_to_string)
+                .unwrap_or_default(),
+            // Postman v2.0 object: { "token": "..." }
+            Some(Value::Object(map)) => map
+                .get(target_key)
+                .map(value_to_string)
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
     };
 
-    match pm_auth.auth_type.as_str() {
-        "bearer" => AuthConfig {
+    match auth_type.as_str() {
+        "bearer" => Some(AuthConfig {
             auth_type: "bearer".to_string(),
-            bearer_token: find_attr(&pm_auth.bearer, "token"),
+            bearer_token: find_auth_attr("bearer", "token"),
             ..Default::default()
-        },
-        "basic" => AuthConfig {
+        }),
+        "basic" => Some(AuthConfig {
             auth_type: "basic".to_string(),
-            basic_username: find_attr(&pm_auth.basic, "username"),
-            basic_password: find_attr(&pm_auth.basic, "password"),
+            basic_username: find_auth_attr("basic", "username"),
+            basic_password: find_auth_attr("basic", "password"),
             ..Default::default()
-        },
+        }),
         "apikey" => {
-            let in_where = find_attr(&pm_auth.apikey, "in");
-            AuthConfig {
+            let in_where = find_auth_attr("apikey", "in");
+            Some(AuthConfig {
                 auth_type: "apikey".to_string(),
-                api_key_name: find_attr(&pm_auth.apikey, "key"),
-                api_key_value: find_attr(&pm_auth.apikey, "value"),
+                api_key_name: find_auth_attr("apikey", "key"),
+                api_key_value: find_auth_attr("apikey", "value"),
                 api_key_in: if in_where == "query" {
                     "query".to_string()
                 } else {
                     "header".to_string()
                 },
                 ..Default::default()
-            }
+            })
         }
-        _ => AuthConfig::default(),
+        "noauth" => Some(AuthConfig::default()),
+        _ => None,
     }
 }
 
@@ -946,5 +1810,185 @@ mod tests {
         assert_eq!(imported_ws.requests.len(), ws.requests.len());
         assert!(!imported_ws.environments[0].variables.is_empty());
     }
-}
 
+    #[test]
+    fn test_postman_quirky_v20_and_v21_import() {
+        let db = Database::new_in_memory().expect("in memory db");
+        let raw_json = r#"
+        {
+          "info": {
+            "name": "Quirky Service API",
+            "description": { "content": "Markdown description", "type": "text/markdown" },
+            "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+          },
+          "auth": {
+            "type": "bearer",
+            "bearer": { "token": "{{GLOBAL_TOKEN}}" }
+          },
+          "item": [
+            {
+              "name": "Auth Folder",
+              "auth": {
+                "type": "basic",
+                "basic": [{ "key": "username", "value": "admin" }, { "key": "password", "value": "secret" }]
+              },
+              "item": [
+                {
+                  "name": "Nested Folder",
+                  "item": [
+                    {
+                      "name": "Login GQL",
+                      "request": {
+                        "method": "post",
+                        "header": [
+                          { "key": "X-Debug", "value": "1", "description": null, "disabled": null }
+                        ],
+                        "url": {
+                          "protocol": "https",
+                          "host": ["api", "example", "com"],
+                          "port": 8443,
+                          "path": ["v1", "graphql"],
+                          "query": null
+                        },
+                        "body": {
+                          "mode": "graphql",
+                          "graphql": {
+                            "query": "query { me { id } }",
+                            "variables": "{\"id\": 1}"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "Empty Body Ping",
+              "request": {
+                "method": "GET",
+                "url": "https://httpbin.org/get?foo=bar",
+                "body": {}
+              }
+            }
+          ],
+          "variable": [
+            { "key": "GLOBAL_TOKEN", "value": 12345, "disabled": false }
+          ]
+        }"#;
+
+        let preview = inspect_postman_json(raw_json).expect("preview should work");
+        assert_eq!(preview.kind, "collection_v20");
+        assert_eq!(preview.folder_count, 2);
+        assert_eq!(preview.request_count, 2);
+        assert_eq!(preview.variable_count, 1);
+
+        let result = import_postman_file(&db, raw_json, None, None, true).expect("import should succeed");
+        assert_eq!(result.folders_imported, 2);
+        assert_eq!(result.requests_imported, 2);
+
+        let ws = db.load_project_workspace(&result.project.id).expect("ws");
+        let gql_req = ws.requests.iter().find(|r| r.name == "Login GQL").expect("gql req");
+        assert_eq!(gql_req.method, "POST");
+        assert_eq!(gql_req.url, "https://api.example.com:8443/v1/graphql");
+        assert_eq!(gql_req.auth.auth_type, "basic");
+        assert_eq!(gql_req.auth.basic_username, "admin");
+        assert_eq!(gql_req.body.mode, "json");
+        assert!(gql_req.body.raw.contains("query { me { id } }"));
+    }
+
+    #[test]
+    fn test_postman_environment_and_merge_import() {
+        let db = Database::new_in_memory().expect("in memory db");
+        let existing_project = db.list_projects().expect("projects")[0].clone();
+
+        let env_json = r#"{
+          "id": "env-123",
+          "name": "Staging Environment",
+          "values": [
+            { "key": "BASE_URL", "value": "https://staging.api.local", "enabled": true },
+            { "key": "DISABLED_VAR", "value": "skip", "enabled": false }
+          ],
+          "_postman_variable_scope": "environment"
+        }"#;
+
+        let preview = inspect_postman_json(env_json).expect("env preview");
+        assert_eq!(preview.kind, "environment");
+        assert_eq!(preview.variable_count, 2);
+
+        let result = import_postman_file(
+            &db,
+            env_json,
+            Some(&existing_project.id),
+            None,
+            true,
+        )
+        .expect("env import");
+
+        assert_eq!(result.environments_imported, 1);
+        assert_eq!(result.variables_imported, 2);
+        let ws = db.load_project_workspace(&existing_project.id).expect("ws");
+        let imported_env = ws
+            .environments
+            .iter()
+            .find(|e| e.name == "Staging Environment")
+            .expect("env saved");
+        assert_eq!(imported_env.variables.len(), 2);
+        assert!(!imported_env.variables[1].enabled);
+        assert_eq!(ws.project.active_environment_id, Some(imported_env.id.clone()));
+    }
+
+    #[test]
+    fn test_postman_dump_and_recursive_folder_delete() {
+        let db = Database::new_in_memory().expect("in memory db");
+        let dump_json = r#"{
+          "version": 1,
+          "collections": [
+            {
+              "info": { "name": "Dump Service" },
+              "item": [
+                {
+                  "name": "Parent",
+                  "item": [
+                    {
+                      "name": "Child",
+                      "item": [
+                        { "name": "Nested Endpoint", "request": "https://example.com/nested" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "environments": [
+            {
+              "name": "Dump QA Env",
+              "values": [{ "key": "HOST", "value": "qa.local", "enabled": true }]
+            }
+          ],
+          "globals": [
+            { "key": "GLOBAL_KEY", "value": "g1", "enabled": true }
+          ]
+        }"#;
+
+        let preview = inspect_postman_json(dump_json).expect("dump preview");
+        assert_eq!(preview.kind, "dump");
+        assert_eq!(preview.collection_count, 1);
+        assert_eq!(preview.folder_count, 2);
+        assert_eq!(preview.request_count, 1);
+
+        let res = import_postman_file(&db, dump_json, None, None, true).expect("dump import");
+        assert_eq!(res.folders_imported, 2);
+        assert_eq!(res.requests_imported, 1);
+        assert_eq!(res.environments_imported, 2);
+
+        let ws = db.load_project_workspace(&res.project.id).expect("ws");
+        let parent_folder = ws.folders.iter().find(|f| f.name == "Parent").expect("parent");
+        db.delete_folder(&parent_folder.id).expect("recursive delete");
+
+        let ws_after = db.load_project_workspace(&res.project.id).expect("ws after");
+        assert_eq!(ws_after.folders.len(), 0);
+        assert_eq!(ws_after.requests.len(), 0);
+    }
+}

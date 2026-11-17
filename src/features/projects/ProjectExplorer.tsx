@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -14,7 +14,7 @@ import {
   Trash2,
   ArrowUp,
   ArrowDown,
-  Share2,
+  Upload,
   X,
   Check,
 } from "lucide-react";
@@ -41,7 +41,7 @@ export const ProjectExplorer: React.FC<{
     deleteProjectById,
     setActiveEnvironmentId,
     setEnvModalOpen,
-    setImportExportModalOpen,
+    openPostmanModal,
     createFolder,
     renameFolder,
     deleteFolder,
@@ -274,11 +274,31 @@ export const ProjectExplorer: React.FC<{
     );
   };
 
-  const renderFolderNode = (folder: Folder) => {
+  const countFolderRequests = (folderId: string, seen = new Set<string>()): number => {
+    if (seen.has(folderId)) return 0;
+    seen.add(folderId);
+    let total = filteredRequests.filter((r) => r.folderId === folderId).length;
+    for (const child of folders) {
+      if (child.parentId === folderId) {
+        total += countFolderRequests(child.id, seen);
+      }
+    }
+    return total;
+  };
+
+  const renderFolderNode = (folder: Folder, seen = new Set<string>()) => {
+    if (seen.has(folder.id)) return null;
+    const nextSeen = new Set(seen);
+    nextSeen.add(folder.id);
+
     const isCollapsed = !!collapsedFolders[folder.id];
+    const childFolders = folders
+      .filter((f) => f.parentId === folder.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
     const folderRequests = filteredRequests
       .filter((r) => r.folderId === folder.id)
       .sort((a, b) => a.sortOrder - b.sortOrder);
+    const totalCount = countFolderRequests(folder.id);
     const isEditing = editingFolderId === folder.id;
 
     return (
@@ -319,7 +339,7 @@ export const ProjectExplorer: React.FC<{
             ) : (
               <span className="folder-name">{folder.name}</span>
             )}
-            <span className="folder-count">{folderRequests.length}</span>
+            <span className="folder-count">{totalCount}</span>
           </div>
 
           <div
@@ -358,7 +378,8 @@ export const ProjectExplorer: React.FC<{
 
         {!isCollapsed && (
           <div className="folder-children">
-            {folderRequests.length === 0 ? (
+            {childFolders.map((cf) => renderFolderNode(cf, nextSeen))}
+            {childFolders.length === 0 && folderRequests.length === 0 ? (
               <div className="folder-empty-hint">Empty folder</div>
             ) : (
               folderRequests.map(renderRequestRow)
@@ -554,11 +575,11 @@ export const ProjectExplorer: React.FC<{
               <button
                 type="button"
                 className="btn-secondary btn-xxs"
-                onClick={() => setImportExportModalOpen(true)}
-                title="Import / Export Postman Collection v2.1"
+                onClick={() => openPostmanModal("import")}
+                title="Import File dari Postman (Ctrl+I)"
               >
-                <Share2 size={12} />
-                <span>Postman</span>
+                <Upload size={12} />
+                <span>Import</span>
               </button>
             </div>
 
@@ -591,7 +612,10 @@ export const ProjectExplorer: React.FC<{
 
           {/* Folder & Request Hierarchy */}
           <div className="tree-scroll-area">
-            {folders.map(renderFolderNode)}
+            {folders
+              .filter((f) => !f.parentId || !folders.some((p) => p.id === f.parentId))
+              .sort((a, b) => a.sortOrder - b.sortOrder)
+              .map((f) => renderFolderNode(f))}
 
             {rootRequests.length > 0 && (
               <div className="root-requests-section">
@@ -605,14 +629,24 @@ export const ProjectExplorer: React.FC<{
             {folders.length === 0 && rootRequests.length === 0 && (
               <div className="sidebar-empty-state">
                 <p>No matching requests</p>
-                <button
-                  type="button"
-                  className="btn-primary btn-xs"
-                  onClick={() => createRequest(null, "New Request")}
-                >
-                  <Plus size={13} />
-                  <span>Create Request</span>
-                </button>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center" }}>
+                  <button
+                    type="button"
+                    className="btn-primary btn-xs"
+                    onClick={() => createRequest(null, "New Request")}
+                  >
+                    <Plus size={13} />
+                    <span>Create Request</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-xs"
+                    onClick={() => openPostmanModal("import")}
+                  >
+                    <Upload size={13} />
+                    <span>Import Postman</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>

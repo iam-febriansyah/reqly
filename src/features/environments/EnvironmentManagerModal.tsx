@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from "react";
-import { Check, Plus, Trash2, Layers } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Check, Plus, Trash2, Layers, Upload } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { useAppStore } from "../../stores/useAppStore";
 import type { Environment, EnvironmentVariable } from "../../types";
-import { generateId } from "../../services/api";
+import { api, generateId, isTauriRuntime } from "../../services/api";
 
 export const EnvironmentManagerModal: React.FC = () => {
   const {
@@ -14,12 +14,14 @@ export const EnvironmentManagerModal: React.FC = () => {
     saveEnvironment,
     deleteEnvironment,
     setActiveEnvironmentId,
+    importPostmanFile,
     showToast,
   } = useAppStore();
 
   const [selectedEnvId, setSelectedEnvId] = useState<string | null>(null);
   const [draftEnv, setDraftEnv] = useState<Environment | null>(null);
   const [newEnvName, setNewEnvName] = useState("");
+  const envFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Only initialize selected environment when opening the modal
   useEffect(() => {
@@ -140,6 +142,51 @@ export const EnvironmentManagerModal: React.FC = () => {
     showToast("Environment deleted");
   };
 
+  const processImportedEnvContent = async (jsonContent: string) => {
+    try {
+      const preview = await api.inspectPostmanJson(jsonContent);
+      if (preview.kind !== "environment" && preview.kind !== "globals") {
+        showToast(
+          "File bukan Postman Environment. Gunakan tombol Import di toolbar untuk Collection."
+        );
+        return;
+      }
+      const res = await importPostmanFile({
+        jsonContent,
+        targetProjectId: activeProject.id,
+        setEnvActive: true,
+      });
+      if (res.environmentId) {
+        setSelectedEnvId(res.environmentId);
+      }
+    } catch (err: any) {
+      showToast(
+        typeof err === "string"
+          ? err
+          : err?.message || "Gagal mengimport file Postman Environment"
+      );
+    }
+  };
+
+  const handleImportPostmanEnvClick = async () => {
+    if (isTauriRuntime()) {
+      try {
+        const picked = await api.openPostmanFileDialog();
+        if (picked) {
+          await processImportedEnvContent(picked.content);
+        }
+      } catch (err: any) {
+        showToast(
+          typeof err === "string"
+            ? err
+            : err?.message || "Gagal membaca file environment"
+        );
+      }
+    } else {
+      envFileInputRef.current?.click();
+    }
+  };
+
   return (
     <Modal
       open={envModalOpen}
@@ -166,6 +213,34 @@ export const EnvironmentManagerModal: React.FC = () => {
               <Plus size={13} />
             </button>
           </form>
+
+          <input
+            ref={envFileInputRef}
+            type="file"
+            accept=".json,application/json,.postman_environment,.postman_globals"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = () => {
+                if (typeof reader.result === "string") {
+                  void processImportedEnvContent(reader.result);
+                }
+              };
+              reader.readAsText(file);
+            }}
+          />
+          <button
+            type="button"
+            className="btn-secondary btn-xs env-import-btn"
+            onClick={handleImportPostmanEnvClick}
+            title="Import .postman_environment.json / .postman_globals.json"
+          >
+            <Upload size={12} />
+            <span>Import Postman Env</span>
+          </button>
 
           <div className="env-list">
             {environments.length === 0 ? (

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
@@ -8,8 +9,20 @@ use crate::models::{
     Environment, Folder, HistoryEntry, HttpResponseData, Project, ProjectWorkspaceData,
     SavedRequest,
 };
-use crate::postman::{export_project_to_postman_v21, import_postman_collection};
+use crate::postman::{
+    export_project_to_postman_v21, import_postman_collection, import_postman_file,
+    inspect_postman_json, PostmanImportPreview, PostmanImportResult,
+};
 use crate::variables::resolve_request;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedFilePayload {
+    pub file_name: String,
+    pub path: String,
+    pub size_bytes: usize,
+    pub content: String,
+}
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -227,6 +240,62 @@ pub fn import_postman_collection_cmd(
     json_content: String,
 ) -> Result<Project, String> {
     import_postman_collection(&state.db, &json_content)
+}
+
+#[tauri::command]
+pub fn inspect_postman_json_cmd(json_content: String) -> Result<PostmanImportPreview, String> {
+    inspect_postman_json(&json_content)
+}
+
+#[tauri::command]
+pub fn import_postman_file_cmd(
+    state: State<'_, AppState>,
+    json_content: String,
+    target_project_id: Option<String>,
+    name_override: Option<String>,
+    set_env_active: Option<bool>,
+) -> Result<PostmanImportResult, String> {
+    import_postman_file(
+        &state.db,
+        &json_content,
+        target_project_id.as_deref(),
+        name_override.as_deref(),
+        set_env_active.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+pub async fn open_postman_file_dialog() -> Result<Option<OpenedFilePayload>, String> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Import Postman File")
+        .add_filter(
+            "Postman JSON Files",
+            &[
+                "json",
+                "postman_collection",
+                "postman_environment",
+                "postman_globals",
+                "postman_dump",
+            ],
+        )
+        .add_filter("All Files", &["*"]);
+
+    if let Some(file_handle) = dialog.pick_file().await {
+        let file_name = file_handle.file_name();
+        let path = file_handle.path().to_string_lossy().to_string();
+        let bytes = file_handle.read().await;
+        let size_bytes = bytes.len();
+        let content = String::from_utf8(bytes)
+            .map_err(|_| "File harus berupa teks JSON berformat UTF-8.".to_string())?;
+        Ok(Some(OpenedFilePayload {
+            file_name,
+            path,
+            size_bytes,
+            content,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
