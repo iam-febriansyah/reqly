@@ -213,3 +213,19 @@ pub struct ProjectWorkspaceData {
     pub history: Vec<HistoryEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFileCheckResult {
+    pub reachable: bool,
+    pub ok: bool,
+    pub status: Option<u16>,
+    pub host: String,
+    pub resolved_ip: Option<String>,
+    pub resolved_url: String,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+    pub file_name: Option<String>,
+    pub latency_ms: u64,
+    pub message: String,
+}
+

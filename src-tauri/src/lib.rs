@@ -59,6 +59,8 @@ pub fn run() {
             commands::inspect_postman_json_cmd,
             commands::import_postman_file_cmd,
             commands::open_postman_file_dialog,
+            commands::pick_multipart_file_dialog,
+            commands::check_remote_file_url_cmd,
             commands::save_file_dialog,
             commands::show_in_file_manager,
         ])

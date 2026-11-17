@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BookmarkPlus,
   CheckCircle2,
   Clock,
   Download,
+  FolderOpen,
+  Loader2,
   Lock,
   Play,
   Plus,
@@ -12,6 +14,8 @@ import {
   ShieldCheck,
   Square,
   Trash2,
+  Wifi,
+  WifiOff,
   X,
 } from "lucide-react";
 import { useAppStore } from "../../stores/useAppStore";
@@ -21,11 +25,21 @@ import { JsonCodeEditor } from "../../components/JsonCodeEditor";
 import { SaveRequestAsModal } from "./SaveRequestAsModal";
 import { exportRequestBodyJson } from "../../utils/fileExport";
 import {
+  api,
+  clearBrowserMultipartFile,
   collectUnresolvedVariables,
   generateId,
+  isTauriRuntime,
+  parseRemoteFileUrlPreview,
+  registerBrowserMultipartFile,
   resolveVariablesInString,
 } from "../../services/api";
-import type { AuthType, BodyMode, MultipartField } from "../../types";
+import type {
+  AuthType,
+  BodyMode,
+  MultipartField,
+  RemoteFileCheckResult,
+} from "../../types";
 
 const STANDARD_METHODS = [
   "GET",
@@ -60,6 +74,160 @@ export const RequestEditor: React.FC = () => {
   >("params");
   const [customMethodMode, setCustomMethodMode] = useState(false);
   const [saveAsModalOpen, setSaveAsModalOpen] = useState(false);
+
+  const [urlCheckStates, setUrlCheckStates] = useState<
+    Record<
+      string,
+      {
+        checking: boolean;
+        checkedUrl: string;
+        result?: RemoteFileCheckResult;
+      }
+    >
+  >({});
+  const urlCheckTimersRef = useRef<Record<string, number>>({});
+  const lastScheduledUrlRef = useRef<Record<string, string>>({});
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const latestFormdataRef = useRef<MultipartField[]>([]);
+  latestFormdataRef.current = activeRequest?.body.formdata || [];
+
+  const runRemoteUrlCheck = useCallback(
+    async (fieldId: string, rawInput: string) => {
+      if (!activeRequest) return;
+      if (urlCheckTimersRef.current[fieldId]) {
+        window.clearTimeout(urlCheckTimersRef.current[fieldId]);
+        delete urlCheckTimersRef.current[fieldId];
+      }
+      const { resolved } = resolveVariablesInString(rawInput, activeVariables);
+      const cacheKey = `${activeRequest.projectId}::${!!activeRequest.sslVerify}::${resolved}`;
+      lastScheduledUrlRef.current[fieldId] = cacheKey;
+
+      setUrlCheckStates((prev) => ({
+        ...prev,
+        [fieldId]: {
+          checking: true,
+          checkedUrl: resolved,
+          result: prev[fieldId]?.result,
+        },
+      }));
+
+      try {
+        const result = await api.checkRemoteFileUrl(
+          activeRequest.projectId,
+          rawInput,
+          !!activeRequest.sslVerify
+        );
+        // Ignore stale check if field was edited while awaiting network check
+        const currentField = latestFormdataRef.current.find(
+          (f) => f.id === fieldId
+        );
+        if (!currentField) return;
+        const currentResolved = resolveVariablesInString(
+          currentField.value,
+          activeVariables
+        ).resolved;
+        if (currentResolved.trim() !== resolved.trim()) return;
+
+        setUrlCheckStates((prev) => ({
+          ...prev,
+          [fieldId]: {
+            checking: false,
+            checkedUrl: resolved,
+            result,
+          },
+        }));
+      } catch (err: any) {
+        setUrlCheckStates((prev) => ({
+          ...prev,
+          [fieldId]: {
+            checking: false,
+            checkedUrl: resolved,
+            result: {
+              reachable: false,
+              ok: false,
+              status: null,
+              host: resolved,
+              resolvedIp: null,
+              resolvedUrl: resolved,
+              contentType: null,
+              contentLength: null,
+              fileName: null,
+              latencyMs: 0,
+              message: err?.message || "Gagal memeriksa koneksi URL.",
+            },
+          },
+        }));
+      }
+    },
+    [activeRequest, activeVariables]
+  );
+
+  // Auto-check connection whenever a multipart file field has/resolves to a remote URL (IP/Domain)
+  useEffect(() => {
+    if (!activeRequest || activeRequest.body.mode !== "formdata") return;
+
+    const activeFileFieldIds = new Set<string>();
+    for (const field of activeRequest.body.formdata) {
+      if (field.fieldType !== "file" || !field.enabled) continue;
+      activeFileFieldIds.add(field.id);
+
+      const { resolved } = resolveVariablesInString(
+        field.value,
+        activeVariables
+      );
+      const remoteUrl = parseRemoteFileUrlPreview(resolved);
+
+      if (remoteUrl) {
+        const cacheKey = `${activeRequest.projectId}::${!!activeRequest.sslVerify}::${resolved}`;
+        if (lastScheduledUrlRef.current[field.id] !== cacheKey) {
+          lastScheduledUrlRef.current[field.id] = cacheKey;
+          if (urlCheckTimersRef.current[field.id]) {
+            window.clearTimeout(urlCheckTimersRef.current[field.id]);
+          }
+          urlCheckTimersRef.current[field.id] = window.setTimeout(() => {
+            void runRemoteUrlCheck(field.id, field.value);
+          }, 550);
+        }
+      } else {
+        if (urlCheckTimersRef.current[field.id]) {
+          window.clearTimeout(urlCheckTimersRef.current[field.id]);
+          delete urlCheckTimersRef.current[field.id];
+        }
+        delete lastScheduledUrlRef.current[field.id];
+        setUrlCheckStates((prev) => {
+          if (!prev[field.id]) return prev;
+          const next = { ...prev };
+          delete next[field.id];
+          return next;
+        });
+      }
+    }
+
+    // Cleanup timers for fields switched away from file or removed
+    for (const fid of Object.keys(urlCheckTimersRef.current)) {
+      if (!activeFileFieldIds.has(fid)) {
+        window.clearTimeout(urlCheckTimersRef.current[fid]);
+        delete urlCheckTimersRef.current[fid];
+        delete lastScheduledUrlRef.current[fid];
+      }
+    }
+  }, [
+    activeRequest?.id,
+    activeRequest?.projectId,
+    activeRequest?.sslVerify,
+    activeRequest?.body.mode,
+    activeRequest?.body.formdata,
+    activeVariables,
+    runRemoteUrlCheck,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      for (const t of Object.values(urlCheckTimersRef.current)) {
+        window.clearTimeout(t);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -120,20 +288,46 @@ export const RequestEditor: React.FC = () => {
     (h) => h.enabled && h.key.trim()
   ).length;
 
-  const handleMultipartChange = (
+  const updateMultipartField = (
     id: string,
-    field: keyof MultipartField,
-    val: string | boolean
+    patch: Partial<MultipartField>
   ) => {
     updateActiveRequest((prev) => ({
       ...prev,
       body: {
         ...prev.body,
         formdata: prev.body.formdata.map((f) =>
-          f.id === id ? { ...f, [field]: val } : f
+          f.id === id ? { ...f, ...patch } : f
         ),
       },
     }));
+  };
+
+  const handleMultipartChange = (
+    id: string,
+    field: keyof MultipartField,
+    val: string | boolean
+  ) => {
+    updateMultipartField(id, { [field]: val } as Partial<MultipartField>);
+  };
+
+  const handleChooseMultipartFile = async (fieldId: string) => {
+    if (isTauriRuntime()) {
+      try {
+        const picked = await api.pickMultipartFileDialog();
+        if (picked) {
+          clearBrowserMultipartFile(fieldId);
+          updateMultipartField(fieldId, {
+            value: picked.path,
+            fileName: picked.fileName,
+          });
+        }
+      } catch (err: any) {
+        showToast(err?.message || "Gagal memilih file");
+      }
+    } else {
+      fileInputRefs.current[fieldId]?.click();
+    }
   };
 
   const handleAddMultipartRow = () => {
@@ -156,6 +350,12 @@ export const RequestEditor: React.FC = () => {
   };
 
   const handleRemoveMultipartRow = (id: string) => {
+    clearBrowserMultipartFile(id);
+    if (urlCheckTimersRef.current[id]) {
+      window.clearTimeout(urlCheckTimersRef.current[id]);
+      delete urlCheckTimersRef.current[id];
+    }
+    delete lastScheduledUrlRef.current[id];
     updateActiveRequest((prev) => ({
       ...prev,
       body: {
@@ -163,6 +363,12 @@ export const RequestEditor: React.FC = () => {
         formdata: prev.body.formdata.filter((f) => f.id !== id),
       },
     }));
+  };
+
+  const formatBytesShort = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
   const renderAuthVarPreview = (raw: string) => {
@@ -699,36 +905,206 @@ export const RequestEditor: React.FC = () => {
                             <select
                               className="select-native kv-type-select"
                               value={field.fieldType}
-                              onChange={(e) =>
-                                handleMultipartChange(
-                                  field.id,
-                                  "fieldType",
-                                  e.target.value as "text" | "file"
-                                )
-                              }
+                              onChange={(e) => {
+                                const nextType = e.target.value as "text" | "file";
+                                if (nextType === "text") {
+                                  clearBrowserMultipartFile(field.id);
+                                }
+                                updateMultipartField(field.id, {
+                                  fieldType: nextType,
+                                  fileName: nextType === "text" ? null : field.fileName,
+                                });
+                              }}
                             >
                               <option value="text">Text</option>
                               <option value="file">File</option>
                             </select>
                           </td>
                           <td>
-                            <input
-                              type="text"
-                              className="kv-input mono-input"
-                              placeholder={
-                                field.fieldType === "file"
-                                  ? "/path/to/file.png"
-                                  : "Text value or {{VARIABLE}}"
-                              }
-                              value={field.value}
-                              onChange={(e) =>
-                                handleMultipartChange(
-                                  field.id,
-                                  "value",
-                                  e.target.value
-                                )
-                              }
-                            />
+                            {field.fieldType === "file" ? (
+                              (() => {
+                                const resolvedVal = resolveVariablesInString(
+                                  field.value,
+                                  activeVariables
+                                ).resolved;
+                                const remoteUrlPreview =
+                                  parseRemoteFileUrlPreview(resolvedVal);
+                                const checkState = urlCheckStates[field.id];
+                                return (
+                                  <div className="multipart-file-cell">
+                                    <div className="multipart-file-controls">
+                                      <input
+                                        type="text"
+                                        className="kv-input mono-input multipart-file-input"
+                                        placeholder="Pilih file atau masukkan Path / URL (IP/Domain)"
+                                        value={field.value}
+                                        onChange={(e) => {
+                                          clearBrowserMultipartFile(field.id);
+                                          updateMultipartField(field.id, {
+                                            value: e.target.value,
+                                            fileName: null,
+                                          });
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (
+                                            e.key === "Enter" &&
+                                            remoteUrlPreview
+                                          ) {
+                                            e.preventDefault();
+                                            void runRemoteUrlCheck(
+                                              field.id,
+                                              field.value
+                                            );
+                                          }
+                                        }}
+                                      />
+                                      {remoteUrlPreview && (
+                                        <>
+                                          <span
+                                            className="multipart-mode-badge"
+                                            title={`Remote URL: ${remoteUrlPreview}`}
+                                          >
+                                            URL
+                                          </span>
+                                          <button
+                                            type="button"
+                                            className="btn-secondary btn-xxs multipart-action-btn"
+                                            onClick={() =>
+                                              void runRemoteUrlCheck(
+                                                field.id,
+                                                field.value
+                                              )
+                                            }
+                                            disabled={checkState?.checking}
+                                            title="Cek koneksi ke IP / Domain URL"
+                                          >
+                                            {checkState?.checking ? (
+                                              <Loader2
+                                                size={11}
+                                                className="spin-icon"
+                                              />
+                                            ) : (
+                                              <Wifi size={11} />
+                                            )}
+                                            <span>
+                                              {checkState?.checking
+                                                ? "Checking"
+                                                : "Check"}
+                                            </span>
+                                          </button>
+                                        </>
+                                      )}
+                                      <input
+                                        ref={(el) => {
+                                          fileInputRefs.current[field.id] = el;
+                                        }}
+                                        type="file"
+                                        style={{ display: "none" }}
+                                        onChange={(e) => {
+                                          const picked = e.target.files?.[0];
+                                          e.target.value = "";
+                                          if (!picked) return;
+                                          registerBrowserMultipartFile(
+                                            field.id,
+                                            picked
+                                          );
+                                          updateMultipartField(field.id, {
+                                            value: picked.name,
+                                            fileName: picked.name,
+                                          });
+                                        }}
+                                      />
+                                      <button
+                                        type="button"
+                                        className="btn-secondary btn-xxs multipart-action-btn"
+                                        onClick={() =>
+                                          void handleChooseMultipartFile(
+                                            field.id
+                                          )
+                                        }
+                                        title="Pilih file dari komputer (Choose File)"
+                                      >
+                                        <FolderOpen size={11} />
+                                        <span>Choose File</span>
+                                      </button>
+                                    </div>
+
+                                    {remoteUrlPreview && (
+                                      <div className="multipart-url-status-row">
+                                        {checkState?.checking ? (
+                                          <span className="multipart-status-pill checking">
+                                            <Loader2
+                                              size={11}
+                                              className="spin-icon"
+                                            />
+                                            <span>
+                                              Mengecek koneksi ke{" "}
+                                              {remoteUrlPreview}...
+                                            </span>
+                                          </span>
+                                        ) : checkState?.result ? (
+                                          <span
+                                            className={`multipart-status-pill ${
+                                              checkState.result.ok
+                                                ? "ok"
+                                                : checkState.result.reachable
+                                                  ? "warn"
+                                                  : "err"
+                                            }`}
+                                            title={
+                                              checkState.result.resolvedUrl
+                                            }
+                                          >
+                                            {checkState.result.ok ? (
+                                              <CheckCircle2 size={11} />
+                                            ) : checkState.result.reachable ? (
+                                              <AlertTriangle size={11} />
+                                            ) : (
+                                              <WifiOff size={11} />
+                                            )}
+                                            <span>
+                                              {checkState.result.message}
+                                              {checkState.result
+                                                .contentLength != null
+                                                ? ` • ${formatBytesShort(
+                                                    checkState.result
+                                                      .contentLength
+                                                  )}`
+                                                : ""}
+                                              {checkState.result.latencyMs > 0
+                                                ? ` • ${checkState.result.latencyMs} ms`
+                                                : ""}
+                                            </span>
+                                          </span>
+                                        ) : (
+                                          <span className="multipart-status-pill idle">
+                                            <Wifi size={11} />
+                                            <span>
+                                              URL IP/Domain terdeteksi — mengecek
+                                              koneksi...
+                                            </span>
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()
+                            ) : (
+                              <input
+                                type="text"
+                                className="kv-input mono-input"
+                                placeholder="Text value or {{VARIABLE}}"
+                                value={field.value}
+                                onChange={(e) =>
+                                  handleMultipartChange(
+                                    field.id,
+                                    "value",
+                                    e.target.value
+                                  )
+                                }
+                              />
+                            )}
                           </td>
                           <td className="kv-cell-actions">
                             <button

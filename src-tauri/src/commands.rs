@@ -1,19 +1,22 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::State;
 
 use crate::database::Database;
 use crate::history::{clear_project_history, delete_history_entry, record_history_entry};
-use crate::http_client::{execute_http_request, CancellationRegistry};
+use crate::http_client::{
+    check_remote_file_connection, execute_http_request, CancellationRegistry,
+};
 use crate::models::{
     Environment, Folder, HistoryEntry, HttpResponseData, Project, ProjectWorkspaceData,
-    SavedRequest,
+    RemoteFileCheckResult, SavedRequest,
 };
 use crate::postman::{
     export_project_to_postman_v21, import_postman_collection, import_postman_file,
     inspect_postman_json, PostmanImportPreview, PostmanImportResult,
 };
-use crate::variables::resolve_request;
+use crate::variables::{build_variable_map, resolve_request, resolve_string};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +25,14 @@ pub struct OpenedFilePayload {
     pub path: String,
     pub size_bytes: usize,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedMultipartFile {
+    pub path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
 }
 
 pub struct AppState {
@@ -334,6 +345,41 @@ pub async fn save_file_dialog(
     } else {
         Ok(None)
     }
+}
+
+#[tauri::command]
+pub async fn pick_multipart_file_dialog() -> Result<Option<PickedMultipartFile>, String> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("Pilih File untuk Multipart Form")
+        .add_filter("All Files", &["*"]);
+
+    if let Some(file_handle) = dialog.pick_file().await {
+        let file_name = file_handle.file_name();
+        let path_buf = file_handle.path().to_path_buf();
+        let size_bytes = std::fs::metadata(&path_buf).map(|m| m.len()).unwrap_or(0);
+        let path = path_buf.to_string_lossy().to_string();
+        Ok(Some(PickedMultipartFile {
+            path,
+            file_name,
+            size_bytes,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn check_remote_file_url_cmd(
+    state: State<'_, AppState>,
+    project_id: String,
+    raw_input: String,
+    ssl_verify: Option<bool>,
+) -> Result<RemoteFileCheckResult, String> {
+    let env_vars = state.db.get_active_environment_variables(&project_id)?;
+    let var_map = build_variable_map(&env_vars);
+    let mut unresolved = HashSet::new();
+    let resolved = resolve_string(&raw_input, &var_map, &mut unresolved);
+    Ok(check_remote_file_connection(&resolved, ssl_verify.unwrap_or(false)).await)
 }
 
 #[tauri::command]

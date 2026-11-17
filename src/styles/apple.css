@@ -793,6 +793,14 @@ button:active:not(:disabled) {
 
 .root-requests-section {
   margin-top: 6px;
+  padding-bottom: 6px;
+  border-radius: 6px;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.root-requests-section.drag-over-root {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .root-requests-caption {
@@ -802,6 +810,108 @@ button:active:not(:disabled) {
   letter-spacing: 0.03em;
   color: var(--text-muted);
   padding: 4px 6px;
+}
+
+/* Request Drag & Drop */
+body.is-dragging-request,
+body.is-dragging-request * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+.request-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11px;
+  margin-left: -2px;
+  color: var(--text-muted);
+  opacity: 0.25;
+  flex-shrink: 0;
+  cursor: grab;
+  transition: opacity 100ms ease, color 100ms ease;
+}
+
+.request-tree-item:hover .request-drag-handle {
+  opacity: 0.75;
+  color: var(--text-secondary);
+}
+
+.request-tree-item.is-drag-source {
+  opacity: 0.4;
+}
+
+.request-tree-item.drop-before::before,
+.request-tree-item.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.request-tree-item.drop-before::before {
+  top: -1px;
+}
+
+.request-tree-item.drop-after::after {
+  bottom: -1px;
+}
+
+.folder-row.drag-over-folder {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.folder-children.drag-over-folder-body {
+  border-left-color: var(--accent);
+}
+
+.root-drop-zone {
+  margin-top: 8px;
+  padding: 10px 8px;
+  border-radius: 6px;
+  border: 1.5px dashed var(--border-strong);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.root-drop-zone.drag-over-root {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.tree-drag-ghost {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--bg-surface);
+  border: 1px solid var(--accent);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  max-width: 240px;
+  opacity: 0.95;
+}
+
+.tree-drag-ghost-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Method Badges */
@@ -1522,6 +1632,85 @@ button:active:not(:disabled) {
 .var-unresolved {
   color: var(--warning);
   background: var(--warning-soft);
+}
+
+/* Multipart File Input + URL Connection Check */
+.multipart-file-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.multipart-file-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+}
+
+.multipart-file-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.multipart-mode-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.multipart-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.multipart-url-status-row {
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+}
+
+.multipart-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10.8px;
+  line-height: 1.35;
+  max-width: 100%;
+  word-break: break-word;
+}
+
+.multipart-status-pill.ok {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.multipart-status-pill.warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.multipart-status-pill.err {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.multipart-status-pill.checking,
+.multipart-status-pill.idle {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
 }
 
 /* Autocomplete & Suggestion Dropdown (Postman-style) */

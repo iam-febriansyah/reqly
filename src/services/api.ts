@@ -6,10 +6,12 @@ import type {
   HistoryEntry,
   HttpResponseData,
   OpenedFilePayload,
+  PickedMultipartFile,
   PostmanImportPreview,
   PostmanImportResult,
   Project,
   ProjectWorkspaceData,
+  RemoteFileCheckResult,
   SavedRequest,
 } from "../types";
 import {
@@ -22,6 +24,68 @@ export function isTauriRuntime(): boolean {
     typeof window !== "undefined" &&
     ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
   );
+}
+
+const browserMultipartFileCache = new Map<string, File>();
+
+export function registerBrowserMultipartFile(fieldId: string, file: File): void {
+  browserMultipartFileCache.set(fieldId, file);
+}
+
+export function clearBrowserMultipartFile(fieldId: string): void {
+  browserMultipartFileCache.delete(fieldId);
+}
+
+export function parseRemoteFileUrlPreview(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("http://") || lower.startsWith("https://")) {
+    try {
+      const u = new URL(trimmed);
+      return u.hostname ? u.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+  if (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("\\") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    trimmed.startsWith("~/") ||
+    trimmed.includes("\\") ||
+    /^[a-zA-Z]:/.test(trimmed)
+  ) {
+    return null;
+  }
+  const firstSeg = trimmed.split("/")[0] || "";
+  if (!firstSeg) return null;
+  const hostPortMatch = firstSeg.match(/^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/);
+  if (!hostPortMatch) return null;
+  const hostOnly = hostPortMatch[1];
+  const hasPort = !!hostPortMatch[2];
+  const hasSlash = trimmed.includes("/");
+  const isIp =
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(hostOnly) &&
+    hostOnly.split(".").every((n) => Number(n) >= 0 && Number(n) <= 255);
+  const isLocalhost = hostOnly.toLowerCase() === "localhost";
+  const isDomain =
+    !isIp &&
+    !isLocalhost &&
+    hasSlash &&
+    hostOnly.includes(".") &&
+    /^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.[a-zA-Z]{2,}$/.test(hostOnly);
+
+  if (isIp || (isLocalhost && (hasPort || hasSlash)) || isDomain) {
+    try {
+      const u = new URL(`http://${trimmed}`);
+      return u.hostname ? u.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function generateId(): string {
@@ -695,9 +759,37 @@ export const api = {
         body = params;
       } else if (request.body.mode === "formdata") {
         const fd = new FormData();
-        request.body.formdata
-          .filter((f) => f.enabled && f.key.trim())
-          .forEach((f) => fd.append(rStr(f.key.trim()), rStr(f.value)));
+        for (const f of request.body.formdata) {
+          if (!f.enabled || !f.key.trim()) continue;
+          const fieldKey = rStr(f.key.trim());
+          if (f.fieldType === "file") {
+            const cached = browserMultipartFileCache.get(f.id);
+            if (cached) {
+              fd.append(fieldKey, cached, f.fileName || cached.name);
+            } else {
+              const resolvedVal = rStr(f.value.trim());
+              const remoteUrl = parseRemoteFileUrlPreview(resolvedVal);
+              if (remoteUrl) {
+                const fetched = await fetch(remoteUrl);
+                if (!fetched.ok) {
+                  throw new Error(
+                    `Failed to fetch remote file '${remoteUrl}' (HTTP ${fetched.status})`
+                  );
+                }
+                const blob = await fetched.blob();
+                const inferredName =
+                  f.fileName ||
+                  remoteUrl.split("/").filter(Boolean).pop()?.split("?")[0] ||
+                  "upload.bin";
+                fd.append(fieldKey, blob, inferredName);
+              } else {
+                fd.append(fieldKey, resolvedVal);
+              }
+            }
+          } else {
+            fd.append(fieldKey, rStr(f.value));
+          }
+        }
         body = fd;
       }
     }
@@ -872,6 +964,78 @@ export const api = {
       return invoke<OpenedFilePayload | null>("open_postman_file_dialog");
     }
     return null;
+  },
+
+  async pickMultipartFileDialog(): Promise<PickedMultipartFile | null> {
+    if (isTauriRuntime()) {
+      return invoke<PickedMultipartFile | null>("pick_multipart_file_dialog");
+    }
+    return null;
+  },
+
+  async checkRemoteFileUrl(
+    projectId: string,
+    rawInput: string,
+    sslVerify = false
+  ): Promise<RemoteFileCheckResult> {
+    if (isTauriRuntime()) {
+      return invoke<RemoteFileCheckResult>("check_remote_file_url_cmd", {
+        projectId,
+        rawInput,
+        sslVerify,
+      });
+    }
+    const normalized = parseRemoteFileUrlPreview(rawInput);
+    if (!normalized) {
+      return {
+        reachable: false,
+        ok: false,
+        status: null,
+        host: "",
+        resolvedIp: null,
+        resolvedUrl: rawInput.trim(),
+        contentType: null,
+        contentLength: null,
+        fileName: null,
+        latencyMs: 0,
+        message: "Format URL tidak valid.",
+      };
+    }
+    const started = performance.now();
+    try {
+      const u = new URL(normalized);
+      const res = await fetch(normalized, { method: "HEAD" });
+      const lenHeader = res.headers.get("content-length");
+      return {
+        reachable: true,
+        ok: res.ok,
+        status: res.status,
+        host: u.host,
+        resolvedIp: null,
+        resolvedUrl: normalized,
+        contentType: res.headers.get("content-type"),
+        contentLength: lenHeader ? Number(lenHeader) : null,
+        fileName: u.pathname.split("/").filter(Boolean).pop() || null,
+        latencyMs: Math.round(performance.now() - started),
+        message: res.ok
+          ? `Terhubung ke ${u.host} • HTTP ${res.status}`
+          : `Host ${u.host} merespon HTTP ${res.status}`,
+      };
+    } catch (err: any) {
+      return {
+        reachable: false,
+        ok: false,
+        status: null,
+        host: rawInput.trim(),
+        resolvedIp: null,
+        resolvedUrl: normalized,
+        contentType: null,
+        contentLength: null,
+        fileName: null,
+        latencyMs: Math.round(performance.now() - started),
+        message: err?.message || "Gagal terhubung ke URL remote.",
+      };
+    }
   },
 
   async inspectPostmanJson(jsonContent: string): Promise<PostmanImportPreview> {

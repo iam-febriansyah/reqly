@@ -177,4 +177,25 @@ export interface PostmanImportResult {
   message: string;
 }
 
+export interface PickedMultipartFile {
+  path: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+export interface RemoteFileCheckResult {
+  reachable: boolean;
+  ok: boolean;
+  status: number | null;
+  host: string;
+  resolvedIp: string | null;
+  resolvedUrl: string;
+  contentType: string | null;
+  contentLength: number | null;
+  fileName: string | null;
+  latencyMs: number;
+  message: string;
+}
+
+
 

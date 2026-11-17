@@ -75,6 +75,11 @@ interface AppStoreContextValue {
   duplicateRequest: (requestId: string) => Promise<void>;
   moveRequestToFolder: (requestId: string, folderId: string | null) => Promise<void>;
   reorderRequest: (requestId: string, direction: "up" | "down") => Promise<void>;
+  moveAndReorderRequest: (
+    requestId: string,
+    targetFolderId: string | null,
+    insertIndex?: number
+  ) => Promise<void>;
   deleteRequest: (requestId: string) => Promise<void>;
 
   // Execution actions
@@ -458,16 +463,99 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [showToast]
   );
 
-  const moveRequestToFolder = useCallback(
-    async (requestId: string, folderId: string | null) => {
+  const moveAndReorderRequest = useCallback(
+    async (
+      requestId: string,
+      targetFolderId: string | null,
+      insertIndex?: number
+    ) => {
       const target = requests.find((r) => r.id === requestId);
       if (!target) return;
-      await api.moveRequest(requestId, folderId, target.sortOrder);
-      setRequests((prev) =>
-        prev.map((r) => (r.id === requestId ? { ...r, folderId } : r))
+
+      const oldFolderId = target.folderId ?? null;
+      const destFolderId = targetFolderId ?? null;
+
+      const sortedAll = [...requests].sort((a, b) => a.sortOrder - b.sortOrder);
+      const destSiblings = sortedAll.filter(
+        (r) => (r.folderId ?? null) === destFolderId && r.id !== requestId
       );
+
+      const clampedIndex =
+        insertIndex === undefined
+          ? destSiblings.length
+          : Math.max(0, Math.min(insertIndex, destSiblings.length));
+
+      const movedItem: SavedRequest = { ...target, folderId: destFolderId };
+      destSiblings.splice(clampedIndex, 0, movedItem);
+
+      if (oldFolderId === destFolderId) {
+        const prevOrder = sortedAll
+          .filter((r) => (r.folderId ?? null) === destFolderId)
+          .map((r) => r.id);
+        const nextOrder = destSiblings.map((r) => r.id);
+        if (
+          prevOrder.length === nextOrder.length &&
+          prevOrder.every((id, idx) => id === nextOrder[idx])
+        ) {
+          return;
+        }
+      }
+
+      let nextRequests: SavedRequest[];
+      if (oldFolderId === destFolderId) {
+        let siblingCursor = 0;
+        nextRequests = sortedAll
+          .map((r) =>
+            (r.folderId ?? null) === destFolderId
+              ? destSiblings[siblingCursor++]
+              : r
+          )
+          .map((r, idx) => ({ ...r, sortOrder: idx }));
+      } else {
+        const anchorIdx = sortedAll.findIndex(
+          (r) => (r.folderId ?? null) === destFolderId
+        );
+        const remaining = sortedAll.filter(
+          (r) => (r.folderId ?? null) !== destFolderId && r.id !== requestId
+        );
+        if (anchorIdx !== -1) {
+          const beforeIds = new Set(
+            sortedAll
+              .slice(0, anchorIdx)
+              .filter(
+                (r) => (r.folderId ?? null) !== destFolderId && r.id !== requestId
+              )
+              .map((r) => r.id)
+          );
+          const before = remaining.filter((r) => beforeIds.has(r.id));
+          const after = remaining.filter((r) => !beforeIds.has(r.id));
+          nextRequests = [...before, ...destSiblings, ...after].map((r, idx) => ({
+            ...r,
+            sortOrder: idx,
+          }));
+        } else {
+          nextRequests = [...remaining, ...destSiblings].map((r, idx) => ({
+            ...r,
+            sortOrder: idx,
+          }));
+        }
+      }
+
+      setRequests(nextRequests);
+
+      if (oldFolderId !== destFolderId) {
+        await api.moveRequest(requestId, destFolderId, clampedIndex);
+      }
+      await api.reorderRequests(nextRequests.map((r) => r.id));
     },
     [requests]
+  );
+
+  const moveRequestToFolder = useCallback(
+    async (requestId: string, folderId: string | null) => {
+      await moveAndReorderRequest(requestId, folderId);
+    },
+    [moveAndReorderRequest]
   );
 
   const reorderRequest = useCallback(
@@ -754,6 +842,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       duplicateRequest,
       moveRequestToFolder,
       reorderRequest,
+      moveAndReorderRequest,
       deleteRequest,
       sendActiveRequest,
       cancelActiveRequest,
@@ -806,6 +895,7 @@ export const AppStoreProvider: React.FC<{ children: React.ReactNode }> = ({
       duplicateRequest,
       moveRequestToFolder,
       reorderRequest,
+      moveAndReorderRequest,
       deleteRequest,
       sendActiveRequest,
       cancelActiveRequest,
